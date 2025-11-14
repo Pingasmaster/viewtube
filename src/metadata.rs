@@ -132,9 +132,9 @@ impl MetadataStore {
         let conn = Connection::open(path)
             .with_context(|| format!("opening metadata DB {}", path.display()))?;
 
-        conn.pragma_update(None, "journal_mode", &"WAL")
+        conn.pragma_update(None, "journal_mode", "WAL")
             .context("enabling WAL mode for metadata DB")?;
-        conn.pragma_update(None, "synchronous", &"NORMAL")
+        conn.pragma_update(None, "synchronous", "NORMAL")
             .context("setting metadata DB synchronous mode")?;
 
         let mut store = Self { conn };
@@ -368,7 +368,7 @@ impl MetadataReader {
         // do not block unrelated threads.
         let conn = Connection::open(&self.db_path)
             .with_context(|| format!("opening metadata DB {}", self.db_path.display()))?;
-        conn.pragma_update(None, "foreign_keys", &"ON")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         f(&conn)
     }
 
@@ -450,7 +450,7 @@ impl MetadataReader {
             let mut comments = Vec::new();
             let mut rows = stmt.query([videoid])?;
             while let Some(row) = rows.next()? {
-                comments.push(row_to_comment(&row)?);
+                comments.push(row_to_comment(row)?);
             }
             Ok(comments)
         })
@@ -470,7 +470,7 @@ impl MetadataReader {
             let mut rows = stmt.query([])?;
             let mut comments = Vec::new();
             while let Some(row) = rows.next()? {
-                comments.push(row_to_comment(&row)?);
+                comments.push(row_to_comment(row)?);
             }
             Ok(comments)
         })
@@ -492,7 +492,7 @@ impl MetadataReader {
             let mut rows = stmt.query([])?;
             let mut records = Vec::new();
             while let Some(row) = rows.next()? {
-                records.push(row_to_video_record(&row)?);
+                records.push(row_to_video_record(row)?);
             }
             Ok(records)
         })
@@ -513,7 +513,7 @@ impl MetadataReader {
 
             let mut rows = stmt.query([videoid])?;
             if let Some(row) = rows.next()? {
-                Ok(Some(row_to_video_record(&row)?))
+                Ok(Some(row_to_video_record(row)?))
             } else {
                 Ok(None)
             }
@@ -689,7 +689,9 @@ mod tests {
         record.title = "Updated".into();
         record.tags.push("review".into());
         store.upsert_video(&record)?;
-        let updated = reader.get_video("alpha")?.expect("video fetched after update");
+        let updated = reader
+            .get_video("alpha")?
+            .expect("video fetched after update");
         assert_eq!(updated.title, "Updated");
         assert!(updated.tags.contains(&"review".into()));
         Ok(())

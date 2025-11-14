@@ -610,10 +610,10 @@ async fn stream_file(path: PathBuf, mime: Option<Mime>) -> ApiResult<Response> {
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
     let mut response = body.into_response();
-    if let Some(mime) = guessed {
-        if let Ok(value) = mime.to_string().parse() {
-            response.headers_mut().insert(header::CONTENT_TYPE, value);
-        }
+    if let Some(mime) = guessed && let Ok(value) = mime.to_string().parse() {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, value);
     }
 
     Ok(response)

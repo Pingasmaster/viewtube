@@ -195,7 +195,6 @@ fn main() -> Result<()> {
         "regular videos",
         format!("{}/videos", &channel_url),
         Some("!is_live & original_url!*=/shorts/"),
-        &paths.videos,
         &paths,
         &mut archive,
         MediaKind::Video,
@@ -206,7 +205,6 @@ fn main() -> Result<()> {
         "shorts",
         format!("{}/shorts", &channel_url),
         Some("original_url*=/shorts/"),
-        &paths.shorts,
         &paths,
         &mut archive,
         MediaKind::Short,
@@ -281,6 +279,14 @@ impl Paths {
             .with_context(|| format!("creating {}", self.www_root.display()))?;
         Ok(())
     }
+
+    /// Returns the on-disk directory for the provided media kind.
+    fn media_dir(&self, kind: MediaKind) -> &Path {
+        match kind {
+            MediaKind::Video => &self.videos,
+            MediaKind::Short => &self.shorts,
+        }
+    }
 }
 
 /// Runs `<name> --version` to fail loudly when dependencies such as yt-dlp are
@@ -311,10 +317,8 @@ fn load_archive(path: &Path) -> Result<HashSet<String>> {
 
     for line in reader.lines() {
         let line = line?;
-        if let Some(id) = line.split_whitespace().last() {
-            if !id.is_empty() {
-                entries.insert(id.to_owned());
-            }
+        if let Some(id) = line.split_whitespace().last() && !id.is_empty() {
+            entries.insert(id.to_owned());
         }
     }
 
@@ -339,7 +343,6 @@ fn download_collection(
     label: &str,
     list_url: String,
     filter: Option<&str>,
-    output_dir: &Path,
     paths: &Paths,
     archive: &mut HashSet<String>,
     media_kind: MediaKind,
@@ -362,7 +365,7 @@ fn download_collection(
     for (index, video_id) in ids.iter().enumerate() {
         let current = index + 1;
         if let Err(err) = process_media_entry(
-            video_id, current, total, output_dir, paths, archive, media_kind, metadata,
+            video_id, current, total, paths, archive, media_kind, metadata,
         ) {
             eprintln!("  Warning: failed to process {}: {}", video_id, err);
         }
@@ -388,12 +391,12 @@ fn process_media_entry(
     video_id: &str,
     current: usize,
     total: usize,
-    output_dir: &Path,
     paths: &Paths,
     archive: &mut HashSet<String>,
     media_kind: MediaKind,
     metadata: &mut MetadataStore,
 ) -> Result<()> {
+    let output_dir = paths.media_dir(media_kind);
     // Archive entries let us skip heavy downloads when the file tree already
     // contains every muxed format. We still refresh metadata because stats can
     // change over time.
@@ -647,21 +650,17 @@ fn subtitle_name_map(info: &VideoInfo) -> HashMap<String, String> {
     let mut names = HashMap::new();
     if let Some(subs) = &info.subtitles {
         for (code, entries) in subs {
-            if let Some(entry) = entries.first() {
-                if let Some(name) = &entry.name {
-                    names.insert(code.to_owned(), name.to_owned());
-                }
+            if let Some(entry) = entries.first() && let Some(name) = &entry.name {
+                names.insert(code.to_owned(), name.to_owned());
             }
         }
     }
     if let Some(auto) = &info.automatic_captions {
         for (code, entries) in auto {
-            if let Some(entry) = entries.first() {
-                if let Some(name) = &entry.name {
-                    names
-                        .entry(code.to_owned())
-                        .or_insert_with(|| name.to_owned());
-                }
+            if let Some(entry) = entries.first() && let Some(name) = &entry.name {
+                names
+                    .entry(code.to_owned())
+                    .or_insert_with(|| name.to_owned());
             }
         }
     }
@@ -675,19 +674,17 @@ fn first_remote_subtitle(info: &VideoInfo) -> Option<SubtitleTrack> {
 
     for map in iter {
         for (code, entries) in map {
-            if let Some(entry) = entries.first() {
-                if let Some(url) = &entry.url {
-                    let name = entry
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| code.to_ascii_uppercase());
-                    return Some(SubtitleTrack {
-                        code: code.to_owned(),
-                        name,
-                        url: url.clone(),
-                        path: None,
-                    });
-                }
+            if let Some(entry) = entries.first() && let Some(url) = &entry.url {
+                let name = entry
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| code.to_ascii_uppercase());
+                return Some(SubtitleTrack {
+                    code: code.to_owned(),
+                    name,
+                    url: url.clone(),
+                    path: None,
+                });
             }
         }
     }
@@ -750,11 +747,11 @@ fn collect_sources(
             if format
                 .vcodec
                 .as_deref()
-                .map_or(false, |codec| codec.eq_ignore_ascii_case("none"))
+                .is_some_and(|codec| codec.eq_ignore_ascii_case("none"))
                 || format
                     .acodec
                     .as_deref()
-                    .map_or(false, |codec| codec.eq_ignore_ascii_case("none"))
+                    .is_some_and(|codec| codec.eq_ignore_ascii_case("none"))
             {
                 continue;
             }
@@ -898,10 +895,8 @@ fn format_quality_label(height: Option<i64>, dynamic_range: Option<&str>) -> Opt
     if let Some(h) = height {
         parts.push(format!("{h}p"));
     }
-    if let Some(range) = dynamic_range {
-        if !range.is_empty() {
-            parts.push(range.to_owned());
-        }
+    if let Some(range) = dynamic_range && !range.is_empty() {
+        parts.push(range.to_owned());
     }
     if parts.is_empty() {
         None
@@ -1169,27 +1164,25 @@ fn run_silent(mut command: Command, label: &str) {
 fn collect_format_ids(info_json_path: &Path, video_url: &str) -> Result<Vec<String>> {
     let mut formats = BTreeSet::new();
 
-    if info_json_path.exists() {
-        if let Ok(file) = File::open(info_json_path) {
-            let reader = BufReader::new(file);
-            match serde_json::from_reader::<_, InfoJson>(reader) {
-                Ok(info) => {
-                    for entry in info.formats {
-                        if let Some(id) = entry.format_id {
-                            let trimmed = id.trim();
-                            if !trimmed.is_empty() {
-                                formats.insert(trimmed.to_owned());
-                            }
+    if info_json_path.exists() && let Ok(file) = File::open(info_json_path) {
+        let reader = BufReader::new(file);
+        match serde_json::from_reader::<_, InfoJson>(reader) {
+            Ok(info) => {
+                for entry in info.formats {
+                    if let Some(id) = entry.format_id {
+                        let trimmed = id.trim();
+                        if !trimmed.is_empty() {
+                            formats.insert(trimmed.to_owned());
                         }
                     }
                 }
-                Err(err) => {
-                    eprintln!(
-                        "  Warning: could not parse {}: {}",
-                        info_json_path.display(),
-                        err
-                    );
-                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "  Warning: could not parse {}: {}",
+                    info_json_path.display(),
+                    err
+                );
             }
         }
     }
@@ -1224,7 +1217,7 @@ fn collect_format_ids(info_json_path: &Path, video_url: &str) -> Result<Vec<Stri
                     if first
                         .chars()
                         .next()
-                        .map_or(false, |c| c.is_ascii_alphanumeric())
+                        .is_some_and(|c| c.is_ascii_alphanumeric())
                     {
                         formats.insert(first.to_owned());
                     }
