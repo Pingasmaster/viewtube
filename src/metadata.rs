@@ -656,6 +656,11 @@ mod tests {
         let conn = Connection::open(&path)?;
         let journal: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
         assert_eq!(journal.to_lowercase(), "wal");
+        let synchronous: i64 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
+        assert!(
+            synchronous >= 1,
+            "synchronous should be NORMAL or stricter but was {synchronous}"
+        );
 
         for table in ["videos", "shorts", "subtitles", "comments"] {
             let exists: Option<String> = conn
@@ -667,7 +672,30 @@ mod tests {
                 .optional()?;
             assert_eq!(exists.as_deref(), Some(table));
         }
+
+        for index in ["idx_comments_videoid", "idx_comments_parent"] {
+            let exists: Option<String> = conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND name=?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            assert_eq!(exists.as_deref(), Some(index));
+        }
         Ok(())
+    }
+
+    /// Ensures that short-lived connections keep foreign_keys enforcement
+    /// enabled so cascades behave consistently across helpers.
+    #[test]
+    fn reader_enforces_foreign_keys() -> Result<()> {
+        let (_temp, _store, reader, _path) = create_store()?;
+        reader.with_connection(|conn| {
+            let flag: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+            assert_eq!(flag, 1);
+            Ok(())
+        })
     }
 
     /// Covers the insert/update path for long-form videos, ensuring JSON fields

@@ -289,6 +289,35 @@ impl Paths {
     }
 }
 
+#[cfg(test)]
+impl Paths {
+    fn from_base(base: &Path) -> Self {
+        let base = base.to_path_buf();
+        let videos = base.join(VIDEOS_SUBDIR);
+        let shorts = base.join(SHORTS_SUBDIR);
+        let subtitles = base.join(SUBTITLES_SUBDIR);
+        let thumbnails = base.join(THUMBNAILS_SUBDIR);
+        let comments = base.join(COMMENTS_SUBDIR);
+        let archive = base.join(ARCHIVE_FILE);
+        let cookies = base.join(COOKIES_FILE);
+        let www_root = base.join("www");
+        let metadata_db = www_root.join(METADATA_DB_FILE);
+
+        Self {
+            base,
+            videos,
+            shorts,
+            subtitles,
+            thumbnails,
+            comments,
+            archive,
+            cookies,
+            www_root,
+            metadata_db,
+        }
+    }
+}
+
 /// Runs `<name> --version` to fail loudly when dependencies such as yt-dlp are
 /// missing.
 fn ensure_program_available(name: &str) -> Result<()> {
@@ -1250,4 +1279,425 @@ fn sanitize_format_id(format_id: &str) -> String {
             _ => c,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use newtube_tools::metadata::MetadataReader;
+    use std::collections::{HashMap, HashSet};
+    use std::env;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::tempdir;
+
+    fn temp_paths() -> (tempfile::TempDir, Paths) {
+        let dir = tempdir().unwrap();
+        let paths = Paths::from_base(dir.path());
+        (dir, paths)
+    }
+
+    fn sample_video_info() -> VideoInfo {
+        VideoInfo {
+            id: "abc".into(),
+            title: Some("Sample Title".into()),
+            fulltitle: Some("Sample Title".into()),
+            description: Some("desc".into()),
+            like_count: Some(1),
+            dislike_count: Some(0),
+            view_count: Some(10),
+            upload_date: Some("20240101".into()),
+            release_timestamp: None,
+            uploader: None,
+            channel: Some("Channel".into()),
+            channel_id: Some("channel123".into()),
+            channel_url: Some("https://example.com/channel".into()),
+            channel_follower_count: Some(100),
+            duration: Some(120),
+            duration_string: None,
+            thumbnails: Some(vec![ThumbnailInfo {
+                url: Some("https://img/1.jpg".into()),
+                width: Some(100),
+                height: Some(100),
+            }]),
+            tags: Some(vec!["tech".into()]),
+            comment_count: Some(5),
+            subtitles: Some(HashMap::new()),
+            automatic_captions: Some(HashMap::new()),
+            formats: Some(Vec::new()),
+        }
+    }
+
+    fn sample_format(id: &str, ext: &str) -> FormatInfo {
+        FormatInfo {
+            format_id: Some(id.into()),
+            format_note: None,
+            width: Some(1920),
+            height: Some(1080),
+            fps: Some(30.0),
+            ext: Some(ext.into()),
+            vcodec: Some("avc1".into()),
+            acodec: Some("mp4a".into()),
+            filesize: Some(1234),
+            filesize_approx: None,
+            dynamic_range: Some("HDR".into()),
+        }
+    }
+
+    fn install_ytdlp_stub(dir: &Path) -> Result<PathBuf> {
+        let script_path = dir.join("yt-dlp");
+        let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+prev=""
+output=""
+for arg in "$@"; do
+    if [[ "$prev" == "--output" ]]; then
+        output="$arg"
+    fi
+    prev="$arg"
+done
+if [[ " $* " == *" --dump-single-json "* ]]; then
+cat <<'JSON'
+{
+  "id": "alpha",
+  "fulltitle": "Alpha Title",
+  "description": "Sample description",
+  "like_count": 1,
+  "dislike_count": 0,
+  "view_count": 10,
+  "upload_date": "20240101",
+  "channel": "Channel",
+  "channel_id": "chan123",
+  "channel_url": "https://youtube.com/@Channel",
+  "channel_follower_count": 100,
+  "duration": 120,
+  "formats": [
+    {
+      "format_id": "1080p",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "ext": "mp4",
+      "vcodec": "avc1",
+      "acodec": "mp4a",
+      "filesize": 1024
+    }
+  ],
+  "tags": ["tech"],
+  "comment_count": 2
+}
+JSON
+exit 0
+fi
+if [[ " $* " == *" --write-comments "* ]]; then
+cat <<'JSON' > "${output}.comments.json"
+[
+  {"id":"c1","text":"first","timestamp":1700000000,"author_is_channel_owner":true,"like_count":1},
+  {"id":"c1","text":"duplicate","timestamp":1700000100},
+  {"id":"c2","text":"second","time_text":"2024-01-01","author_is_uploader":true}
+]
+JSON
+exit 0
+fi
+exit 0
+"#;
+        fs::write(&script_path, script)?;
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms)?;
+        }
+        Ok(script_path)
+    }
+
+    struct PathGuard {
+        original: Option<String>,
+    }
+
+    impl PathGuard {
+        fn set_with_stub(dir: &Path) -> Self {
+            let original = env::var("PATH").ok();
+            let new_path = if let Some(ref value) = original {
+                format!("{}:{}", dir.display(), value)
+            } else {
+                dir.display().to_string()
+            };
+            unsafe {
+                env::set_var("PATH", new_path);
+            }
+            Self { original }
+        }
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            if let Some(ref value) = self.original {
+                unsafe {
+                    env::set_var("PATH", value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paths_prepare_creates_directories() -> Result<()> {
+        let (_temp, paths) = temp_paths();
+        paths.prepare()?;
+        assert!(paths.videos.exists());
+        assert!(paths.shorts.exists());
+        assert!(paths.subtitles.exists());
+        assert!(paths.thumbnails.exists());
+        assert!(paths.comments.exists());
+        assert!(paths.www_root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn archive_roundtrip_loads_ids() -> Result<()> {
+        let dir = tempdir()?;
+        let archive_path = dir.path().join("archive.txt");
+        append_to_archive(&archive_path, "abc123")?;
+        append_to_archive(&archive_path, "abc123")?;
+        append_to_archive(&archive_path, "def456")?;
+
+        let entries = load_archive(&archive_path)?;
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains("abc123"));
+        assert!(entries.contains("def456"));
+        Ok(())
+    }
+
+    #[test]
+    fn build_video_record_populates_fields() -> Result<()> {
+        let (_temp, paths) = temp_paths();
+        paths.prepare()?;
+        let media_dir = paths.media_dir(MediaKind::Video).join("abc");
+        fs::create_dir_all(&media_dir)?;
+        fs::write(media_dir.join("abc_1080p.mp4"), "bytes")?;
+        let thumbs_dir = paths.thumbnails.join("abc");
+        fs::create_dir_all(&thumbs_dir)?;
+        fs::write(thumbs_dir.join("first.jpg"), "1")?;
+        fs::write(thumbs_dir.join("second.jpg"), "1")?;
+
+        let mut info = sample_video_info();
+        info.fulltitle = Some("Fancy Title".into());
+        info.title = None;
+        info.duration = Some(125);
+        info.duration_string = None;
+        info.formats = Some(vec![sample_format("1080p", "mp4")]);
+
+        let record = build_video_record(
+            "abc",
+            &info,
+            paths.media_dir(MediaKind::Video),
+            MediaKind::Video,
+            &paths,
+        )?;
+        assert_eq!(record.title, "Fancy Title");
+        assert_eq!(record.duration_text.as_deref(), Some("2:05"));
+        assert_eq!(
+            record.thumbnail_url.as_deref(),
+            Some("/api/videos/abc/thumbnails/first.jpg")
+        );
+        assert_eq!(record.sources.len(), 1);
+        assert_eq!(
+            record.sources[0].url,
+            "/api/videos/abc/streams/1080p".to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collect_subtitles_prefers_local_files() -> Result<()> {
+        let (_temp, paths) = temp_paths();
+        let mut info = sample_video_info();
+        let mut subs = HashMap::new();
+        subs.insert(
+            "en".into(),
+            vec![SubtitleInfo {
+                url: Some("https://remote/en.vtt".into()),
+                ext: Some("vtt".into()),
+                name: Some("English".into()),
+            }],
+        );
+        info.subtitles = Some(subs);
+        let subtitle_dir = paths.subtitles.join("abc");
+        fs::create_dir_all(&subtitle_dir)?;
+        fs::write(subtitle_dir.join("abc.en.vtt"), "WEBVTT")?;
+
+        let collection = collect_subtitles("abc", &info, &paths, MediaKind::Video)?;
+        assert_eq!(collection.languages.len(), 1);
+        let track = &collection.languages[0];
+        assert!(track.path.as_deref().unwrap().ends_with("abc.en.vtt"));
+        assert!(track.url.contains("/api/videos/abc/subtitles/en"));
+        Ok(())
+    }
+
+    #[test]
+    fn collect_subtitles_falls_back_to_remote_track() -> Result<()> {
+        let (_temp, paths) = temp_paths();
+        let mut info = sample_video_info();
+        let mut subs = HashMap::new();
+        subs.insert(
+            "en".into(),
+            vec![SubtitleInfo {
+                url: Some("https://remote/en.vtt".into()),
+                ext: Some("vtt".into()),
+                name: Some("English".into()),
+            }],
+        );
+        info.subtitles = Some(subs);
+
+        let collection = collect_subtitles("abc", &info, &paths, MediaKind::Video)?;
+        assert_eq!(collection.languages.len(), 1);
+        let track = &collection.languages[0];
+        assert!(track.path.is_none());
+        assert_eq!(track.url, "https://remote/en.vtt");
+        Ok(())
+    }
+
+    #[test]
+    fn collect_sources_skips_audio_only_formats() -> Result<()> {
+        let (_temp, paths) = temp_paths();
+        let video_dir = paths.media_dir(MediaKind::Video).join("abc");
+        fs::create_dir_all(&video_dir)?;
+        let sanitized = sanitize_format_id("f/1");
+        fs::write(video_dir.join(format!("abc_{sanitized}.mp4")), "bytes")?;
+        let mut info = sample_video_info();
+        info.formats = Some(vec![
+            FormatInfo {
+                format_id: Some("f/1".into()),
+                format_note: None,
+                width: Some(1920),
+                height: Some(1080),
+                fps: Some(30.0),
+                ext: Some("mp4".into()),
+                vcodec: Some("avc1".into()),
+                acodec: Some("mp4a".into()),
+                filesize: Some(100),
+                filesize_approx: None,
+                dynamic_range: Some("HDR".into()),
+            },
+            FormatInfo {
+                format_id: Some("audio".into()),
+                format_note: None,
+                width: None,
+                height: None,
+                fps: None,
+                ext: Some("m4a".into()),
+                vcodec: Some("none".into()),
+                acodec: Some("mp4a".into()),
+                filesize: Some(50),
+                filesize_approx: None,
+                dynamic_range: None,
+            },
+        ]);
+
+        let sources = collect_sources("abc", &info, paths.media_dir(MediaKind::Video), "videos")?;
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].url.contains("f_1"));
+        assert_eq!(sources[0].quality_label.as_deref(), Some("1080p HDR"));
+        Ok(())
+    }
+
+    #[test]
+    fn format_helpers_cover_edge_cases() {
+        assert_eq!(
+            format_quality_label(Some(2160), Some("HDR")),
+            Some("2160p HDR".into())
+        );
+        assert_eq!(format_quality_label(None, None), None);
+        assert_eq!(mime_from_extension("webm"), "video/webm");
+        assert_eq!(mime_from_extension("foo"), "video/foo");
+        assert_eq!(
+            upload_date_to_iso("20240102"),
+            Some("2024-01-02T00:00:00Z".into())
+        );
+        assert!(upload_date_to_iso("2024").is_none());
+        assert_eq!(
+            timestamp_to_iso(0).as_deref(),
+            Some("1970-01-01T00:00:00+00:00")
+        );
+        assert_eq!(format_duration(65), "1:05");
+        assert_eq!(format_duration(3725), "1:02:05");
+    }
+
+    #[test]
+    fn collect_format_ids_reads_json() -> Result<()> {
+        let dir = tempdir()?;
+        let info_path = dir.path().join("info.json");
+        let json = serde_json::json!({
+            "formats": [
+                { "format_id": " 136 " },
+                { "format_id": "249" },
+                { "format_id": null }
+            ]
+        });
+        fs::write(&info_path, serde_json::to_vec(&json)?)?;
+        let ids = collect_format_ids(&info_path, "https://example.com/video")?;
+        assert_eq!(ids, vec!["136".to_string(), "249".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn sanitize_format_id_replaces_delimiters() {
+        assert_eq!(sanitize_format_id("http/1080p:60"), "http_1080p_60");
+        assert_eq!(sanitize_format_id("abc def"), "abc_def");
+    }
+
+    #[test]
+    fn process_entry_refreshes_metadata_even_when_archived() -> Result<()> {
+        let (temp, paths) = temp_paths();
+        let _stub = install_ytdlp_stub(temp.path())?;
+        let _guard = PathGuard::set_with_stub(temp.path());
+        paths.prepare()?;
+
+        let media_dir = paths.media_dir(MediaKind::Video).join("alpha");
+        fs::create_dir_all(&media_dir)?;
+        fs::write(media_dir.join("alpha_1080p.mp4"), "video-bytes")?;
+        let subtitle_dir = paths.subtitles.join("alpha");
+        fs::create_dir_all(&subtitle_dir)?;
+        fs::write(subtitle_dir.join("alpha.en.vtt"), "WEBVTT")?;
+
+        let mut metadata = MetadataStore::open(&paths.metadata_db)?;
+        let mut archive = HashSet::from([String::from("alpha")]);
+        process_media_entry(
+            "alpha",
+            1,
+            1,
+            &paths,
+            &mut archive,
+            MediaKind::Video,
+            &mut metadata,
+        )?;
+
+        let reader = MetadataReader::new(&paths.metadata_db)?;
+        let video = reader.get_video("alpha")?.expect("video stored");
+        assert_eq!(video.title, "Alpha Title");
+        let comments = reader.get_comments("alpha")?;
+        assert_eq!(comments.len(), 2);
+        assert!(comments.iter().any(|c| c.status_likedbycreator));
+        Ok(())
+    }
+
+    #[test]
+    fn fetch_comments_dedupes_and_sets_flags() -> Result<()> {
+        let (temp, paths) = temp_paths();
+        let _stub = install_ytdlp_stub(temp.path())?;
+        let _guard = PathGuard::set_with_stub(temp.path());
+        let comments = fetch_comments("alpha", "https://youtube.com/watch?v=alpha", &paths)?;
+        assert_eq!(comments.len(), 2);
+        assert!(
+            comments[0]
+                .time_posted
+                .as_ref()
+                .unwrap()
+                .starts_with("2023")
+        );
+        assert!(comments.iter().any(|c| c.status_likedbycreator));
+        Ok(())
+    }
 }

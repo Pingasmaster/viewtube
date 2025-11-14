@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Minimal Axum backend that serves already-downloaded ViewTube assets.
 //!
 //! Incoming requests never touch YouTube. We only expose the SQLite metadata
@@ -24,8 +26,14 @@ use mime_guess::{MimeGuess, mime::Mime};
 use newtube_tools::metadata::{
     CommentRecord, MetadataReader, SubtitleCollection, VideoRecord, VideoSource,
 };
+#[cfg(test)]
+use newtube_tools::metadata::{MetadataStore, SubtitleTrack};
 use parking_lot::RwLock;
+#[cfg(test)]
+use rusqlite::Connection;
 use serde::Serialize;
+#[cfg(test)]
+use serde_json::json;
 use tokio::{fs::File, signal, task};
 use tokio_util::io::ReaderStream;
 
@@ -134,6 +142,23 @@ impl FilePaths {
             MediaCategory::Video => &self.videos,
             MediaCategory::Short => &self.shorts,
         }
+    }
+}
+
+#[cfg(test)]
+impl FilePaths {
+    fn for_base(path: &Path) -> Self {
+        let paths = Self {
+            videos: path.join(VIDEOS_SUBDIR),
+            shorts: path.join(SHORTS_SUBDIR),
+            thumbnails: path.join(THUMBNAILS_SUBDIR),
+            subtitles: path.join(SUBTITLES_SUBDIR),
+        };
+        std::fs::create_dir_all(&paths.videos).unwrap();
+        std::fs::create_dir_all(&paths.shorts).unwrap();
+        std::fs::create_dir_all(&paths.thumbnails).unwrap();
+        std::fs::create_dir_all(&paths.subtitles).unwrap();
+        paths
     }
 }
 
@@ -617,4 +642,336 @@ async fn stream_file(path: PathBuf, mime: Option<Mime>) -> ApiResult<Response> {
     }
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use serde_json::Value;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    struct BackendTestContext {
+        _temp: tempfile::TempDir,
+        db_path: PathBuf,
+        store: MetadataStore,
+        state: AppState,
+    }
+
+    impl BackendTestContext {
+        fn new() -> Self {
+            let temp = tempdir().unwrap();
+            let db_path = temp.path().join("metadata.db");
+            let store = MetadataStore::open(&db_path).unwrap();
+            let reader = MetadataReader::new(&db_path).unwrap();
+            let files = FilePaths::for_base(temp.path());
+
+            Self {
+                state: AppState {
+                    reader: Arc::new(reader),
+                    cache: Arc::new(ApiCache::new()),
+                    files: Arc::new(files),
+                },
+                db_path,
+                store,
+                _temp: temp,
+            }
+        }
+
+        fn insert_video(&mut self, id: &str) {
+            self.store.upsert_video(&sample_video(id)).unwrap();
+        }
+
+        fn insert_short(&mut self, id: &str) {
+            self.store.upsert_short(&sample_video(id)).unwrap();
+        }
+
+        fn insert_subtitles(&mut self, id: &str, tracks: Vec<SubtitleTrack>) {
+            self.store
+                .upsert_subtitles(&SubtitleCollection {
+                    videoid: id.into(),
+                    languages: tracks,
+                })
+                .unwrap();
+        }
+
+        fn insert_comments(&mut self, id: &str, comments: Vec<CommentRecord>) {
+            self.store
+                .replace_comments(id, &comments)
+                .expect("comments persisted");
+        }
+
+        fn delete_by_videoid(&self, table: &str, value: &str) {
+            let conn = Connection::open(&self.db_path).unwrap();
+            conn.execute(&format!("DELETE FROM {table} WHERE videoid = ?1"), [value])
+                .unwrap();
+        }
+    }
+
+    fn sample_video(id: &str) -> VideoRecord {
+        VideoRecord {
+            videoid: id.into(),
+            title: format!("Video {id}"),
+            description: "desc".into(),
+            likes: Some(1),
+            dislikes: Some(0),
+            views: Some(10),
+            upload_date: Some("2024-01-01T00:00:00Z".into()),
+            author: Some("Channel".into()),
+            subscriber_count: Some(100),
+            duration: Some(60),
+            duration_text: Some("1:00".into()),
+            channel_url: Some("https://example.test/channel".into()),
+            thumbnail_url: Some("/thumb.jpg".into()),
+            tags: vec![],
+            thumbnails: vec![],
+            extras: json!(null),
+            sources: vec![VideoSource {
+                format_id: "1080p".into(),
+                quality_label: Some("1080p".into()),
+                width: Some(1920),
+                height: Some(1080),
+                fps: Some(30.0),
+                mime_type: Some("video/mp4".into()),
+                ext: Some("mp4".into()),
+                file_size: Some(1024),
+                url: format!("/api/videos/{id}/streams/1080p"),
+                path: None,
+            }],
+        }
+    }
+
+    fn sample_comment(id: &str, videoid: &str) -> CommentRecord {
+        CommentRecord {
+            id: id.into(),
+            videoid: videoid.into(),
+            author: "tester".into(),
+            text: "hello world".into(),
+            likes: Some(1),
+            time_posted: Some("2024-01-01T00:00:00Z".into()),
+            parent_comment_id: None,
+            status_likedbycreator: false,
+            reply_count: Some(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_caches_payload() {
+        let mut ctx = BackendTestContext::new();
+        ctx.insert_video("alpha");
+        ctx.insert_short("beta");
+        ctx.insert_subtitles(
+            "alpha",
+            vec![SubtitleTrack {
+                code: "en".into(),
+                name: "English".into(),
+                url: "/api/videos/alpha/subtitles/en".into(),
+                path: None,
+            }],
+        );
+        ctx.insert_comments("alpha", vec![sample_comment("1", "alpha")]);
+
+        let first = ctx.state.get_bootstrap().await.unwrap();
+        assert_eq!(first.videos.len(), 1);
+
+        ctx.insert_video("gamma");
+        let second = ctx.state.get_bootstrap().await.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[tokio::test]
+    async fn media_list_populates_cache() {
+        let mut ctx = BackendTestContext::new();
+        ctx.insert_video("alpha");
+
+        let list = ctx
+            .state
+            .get_media_list(MediaCategory::Video)
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 1);
+        ctx.delete_by_videoid("videos", "alpha");
+
+        let cached = ctx
+            .state
+            .get_media_list(MediaCategory::Video)
+            .await
+            .unwrap();
+        assert_eq!(cached.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn media_lookup_prefers_cache() {
+        let mut ctx = BackendTestContext::new();
+        ctx.insert_video("alpha");
+        let record = ctx
+            .state
+            .get_media(MediaCategory::Video, "alpha")
+            .await
+            .unwrap();
+        assert_eq!(record.videoid, "alpha");
+
+        ctx.delete_by_videoid("videos", "alpha");
+        let cached = ctx
+            .state
+            .get_media(MediaCategory::Video, "alpha")
+            .await
+            .unwrap();
+        assert_eq!(cached.videoid, "alpha");
+
+        let err = ctx
+            .state
+            .get_media(MediaCategory::Video, "ghost")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn comments_and_subtitles_cache() {
+        let mut ctx = BackendTestContext::new();
+        ctx.insert_video("alpha");
+        ctx.insert_comments("alpha", vec![sample_comment("1", "alpha")]);
+        ctx.insert_subtitles(
+            "alpha",
+            vec![SubtitleTrack {
+                code: "en".into(),
+                name: "English".into(),
+                url: "/sub".into(),
+                path: None,
+            }],
+        );
+
+        let first_comments = ctx.state.get_comments("alpha").await.unwrap();
+        assert_eq!(first_comments.len(), 1);
+        ctx.delete_by_videoid("comments", "alpha");
+        let cached_comments = ctx.state.get_comments("alpha").await.unwrap();
+        assert_eq!(cached_comments.len(), 1);
+
+        let first_subtitles = ctx.state.get_subtitles("alpha").await.unwrap();
+        assert!(first_subtitles.is_some());
+        ctx.delete_by_videoid("subtitles", "alpha");
+        let cached_subtitles = ctx.state.get_subtitles("alpha").await.unwrap();
+        assert!(cached_subtitles.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_subtitles_includes_download_urls() {
+        let mut ctx = BackendTestContext::new();
+        ctx.insert_video("alpha");
+        ctx.insert_subtitles(
+            "alpha",
+            vec![SubtitleTrack {
+                code: "en".into(),
+                name: "English".into(),
+                url: "/api/videos/alpha/subtitles/en".into(),
+                path: None,
+            }],
+        );
+
+        let Json(payload) = super::list_subtitles(ctx.state.clone(), "alpha".into(), "videos")
+            .await
+            .unwrap();
+        assert_eq!(payload.len(), 1);
+        assert!(payload[0].url.contains("/videos/alpha/subtitles/en"));
+    }
+
+    #[tokio::test]
+    async fn download_subtitle_uses_fallback_path() {
+        let mut ctx = BackendTestContext::new();
+        ctx.insert_video("alpha");
+        ctx.insert_subtitles(
+            "alpha",
+            vec![SubtitleTrack {
+                code: "en".into(),
+                name: "English".into(),
+                url: "/api/videos/alpha/subtitles/en".into(),
+                path: None,
+            }],
+        );
+
+        let subtitle_dir = ctx.state.files.subtitles.join("alpha");
+        std::fs::create_dir_all(&subtitle_dir).unwrap();
+        std::fs::write(subtitle_dir.join("alpha.en.vtt"), "WEBVTT").unwrap();
+
+        let response = download_subtitle(ctx.state.clone(), "alpha".into(), "en".into())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stream_media_uses_custom_path() {
+        let ctx = BackendTestContext::new();
+        let mut video = sample_video("alpha");
+        let custom = ctx.state.files.videos.join("custom.mp4");
+        std::fs::create_dir_all(custom.parent().unwrap()).unwrap();
+        std::fs::write(&custom, "bytes").unwrap();
+        video.sources[0].path = Some(custom.to_string_lossy().into_owned());
+        ctx.store.upsert_video(&video).unwrap();
+
+        let response = stream_media(
+            ctx.state.clone(),
+            MediaCategory::Video,
+            "alpha".into(),
+            "1080p".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "video/mp4"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_media_builds_default_path() {
+        let ctx = BackendTestContext::new();
+        let mut video = sample_video("alpha");
+        video.sources[0].path = None;
+        ctx.store.upsert_video(&video).unwrap();
+        let media_dir = ctx
+            .state
+            .files
+            .media_dir(MediaCategory::Video)
+            .join("alpha");
+        std::fs::create_dir_all(&media_dir).unwrap();
+        std::fs::write(media_dir.join("alpha_1080p.mp4"), "bytes").unwrap();
+
+        let response = stream_media(
+            ctx.state.clone(),
+            MediaCategory::Video,
+            "alpha".into(),
+            "1080p".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stream_media_missing_format_errors() {
+        let mut ctx = BackendTestContext::new();
+        ctx.insert_video("alpha");
+        let err = stream_media(
+            ctx.state.clone(),
+            MediaCategory::Video,
+            "alpha".into(),
+            "4k".into(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn api_error_serializes_json() {
+        let response = ApiError::not_found("missing").into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["error"], "missing");
+    }
 }

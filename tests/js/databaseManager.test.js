@@ -3,9 +3,10 @@
 // normalization/IndexedDB flows behave as the SPA expects.
 const { DatabaseManager } = require('../../app');
 
-async function createManager() {
+async function createManager(overrides = {}) {
   const manager = new DatabaseManager();
   manager.metadataPath = '/noop';
+  manager.dbName = `ViewTubeDB-test-${Date.now()}-${Math.random()}`;
   manager.api = {
     fetchBootstrap: jest.fn().mockResolvedValue(null),
     fetchVideos: jest.fn().mockResolvedValue([]),
@@ -13,7 +14,8 @@ async function createManager() {
     fetchVideo: jest.fn().mockResolvedValue(null),
     fetchShort: jest.fn().mockResolvedValue(null),
     fetchComments: jest.fn().mockResolvedValue([]),
-    fetchShortComments: jest.fn().mockResolvedValue([])
+    fetchShortComments: jest.fn().mockResolvedValue([]),
+    ...overrides
   };
   await manager.init();
   return manager;
@@ -114,5 +116,151 @@ describe('DatabaseManager IndexedDB operations', () => {
     ];
     const sorted = manager.sortByUploadDate(list);
     expect(sorted.map((v) => v.videoid)).toEqual(['new', 'old', 'unknown']);
+  });
+});
+
+describe('DatabaseManager lifecycle', () => {
+  const originalIndexedDB = window.indexedDB;
+
+  afterEach(() => {
+    window.indexedDB = originalIndexedDB;
+    global.fetch.mockClear();
+    jest.restoreAllMocks();
+  });
+
+  it('short-circuits init when IndexedDB is missing', async () => {
+    delete window.indexedDB;
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const manager = new DatabaseManager();
+    const result = await manager.init();
+    expect(result).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('IndexedDB not supported'));
+  });
+
+  it('seedFromMetadata cancels fetch stream and bulk loads bootstrap payload', async () => {
+    const cancel = jest.fn().mockResolvedValue();
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: { cancel },
+      arrayBuffer: jest.fn()
+    });
+
+    const payload = {
+      videos: [{ videoid: 'video-1', title: 'Video' }],
+      shorts: [{ videoid: 'short-1', title: 'Short' }],
+      subtitles: [{ videoid: 'video-1', languages: [] }],
+      comments: [{ id: 'c1', videoid: 'video-1', parentCommentId: null }]
+    };
+    const manager = await createManager({
+      fetchBootstrap: jest.fn().mockResolvedValue(payload)
+    });
+
+    expect(cancel).toHaveBeenCalled();
+    const videos = await manager.getAllFromStore('videos');
+    const shorts = await manager.getAllFromStore('shorts');
+    const subtitles = await manager.getAllFromStore('subtitles');
+    const comments = await manager.getAllFromStore('comments');
+    expect(videos.map((v) => v.videoid)).toContain('video-1');
+    expect(shorts.map((v) => v.videoid)).toContain('short-1');
+    expect(subtitles.map((s) => s.videoid)).toContain('video-1');
+    expect(comments.map((c) => c.id)).toContain('c1');
+  });
+
+  it('refreshFromApi enforces apiSyncPromise lock', async () => {
+    const manager = await createManager();
+    await manager.refreshFromApi();
+    manager.api.fetchBootstrap.mockClear();
+    let resolveSync;
+    const pending = new Promise((resolve) => {
+      resolveSync = resolve;
+    });
+    manager.api.fetchBootstrap.mockReturnValueOnce(pending);
+
+    const first = manager.refreshFromApi();
+    const second = manager.refreshFromApi();
+    expect(manager.api.fetchBootstrap).toHaveBeenCalledTimes(1);
+
+    resolveSync(null);
+    await Promise.all([first, second]);
+    manager.api.fetchBootstrap.mockResolvedValueOnce(null);
+    await manager.refreshFromApi();
+    expect(manager.api.fetchBootstrap).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('DatabaseManager API fallbacks', () => {
+  afterEach(() => {
+    global.fetch.mockClear();
+  });
+
+  it('fetchAndStoreMedia hits video and short endpoints appropriately', async () => {
+    const manager = await createManager();
+    manager.api.fetchVideo.mockResolvedValueOnce({ videoid: 'v1', title: 'Video' });
+    manager.api.fetchShort.mockResolvedValueOnce({ videoid: 's1', title: 'Short' });
+
+    await manager.fetchAndStoreMedia('v1', 'videos');
+    await manager.fetchAndStoreMedia('s1', 'shorts');
+
+    expect(manager.api.fetchVideo).toHaveBeenCalledWith('v1');
+    expect(manager.api.fetchShort).toHaveBeenCalledWith('s1');
+    const storedVideo = await manager.getFromStore('videos', 'v1');
+    const storedShort = await manager.getFromStore('shorts', 's1');
+    expect(storedVideo.title).toBe('Video');
+    expect(storedShort.title).toBe('Short');
+  });
+
+  it('fetchCommentsFromApi falls back to shorts when video thread fails', async () => {
+    const manager = await createManager();
+    manager.api.fetchComments.mockResolvedValueOnce(null);
+    manager.api.fetchShortComments.mockResolvedValueOnce([
+      { id: 'short-comment', videoid: 'abc', parentCommentId: null }
+    ]);
+
+    await manager.fetchCommentsFromApi('abc');
+    expect(manager.api.fetchShortComments).toHaveBeenCalledWith('abc');
+    const stored = await manager.readCommentsFromStore('abc');
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe('short-comment');
+  });
+
+  it('getVideo/getShort refresh stores before returning entries', async () => {
+    const manager = await createManager();
+    manager.api.fetchVideo.mockResolvedValueOnce({ videoid: 'vid-9', title: 'Video Nine' });
+    manager.api.fetchShort.mockResolvedValueOnce({ videoid: 'short-9', title: 'Short Nine' });
+
+    const video = await manager.getVideo('vid-9');
+    const short = await manager.getShort('short-9');
+
+    expect(video.title).toBe('Video Nine');
+    expect(short.title).toBe('Short Nine');
+  });
+
+  it('getComments filters replies while getCommentReplies returns them', async () => {
+    const manager = await createManager();
+    manager.api.fetchComments.mockResolvedValueOnce([
+      { id: 'parent', videoid: 'abc', parentCommentId: null },
+      { id: 'reply', videoid: 'abc', parentCommentId: 'parent' }
+    ]);
+
+    const parents = await manager.getComments('abc');
+    expect(parents).toHaveLength(1);
+    expect(parents[0].id).toBe('parent');
+
+    const replies = await manager.getCommentReplies('parent');
+    expect(replies).toHaveLength(1);
+    expect(replies[0].id).toBe('reply');
+  });
+
+  it('getComments falls back to short comments when fetchComments rejects', async () => {
+    const manager = await createManager();
+    manager.api.fetchComments.mockRejectedValueOnce(new Error('boom'));
+    manager.api.fetchShortComments.mockResolvedValueOnce([
+      { id: 'short-fallback', videoid: 'xyz', parentCommentId: null }
+    ]);
+
+    await manager.getComments('xyz');
+    expect(manager.api.fetchShortComments).toHaveBeenCalledWith('xyz');
+    const stored = await manager.readCommentsFromStore('xyz');
+    expect(stored.some((c) => c.id === 'short-fallback')).toBe(true);
   });
 });

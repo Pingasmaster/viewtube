@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Public entry point for the reusable ViewTube Rust crate.
 //!
 //! The crate is intentionally small; it mostly exposes the metadata module so

@@ -718,3 +718,7 @@ class ViewerPage {
         }
     }
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { VideoViewer, ShortsViewer, ViewerPage };
+}

@@ -173,3 +173,61 @@ fn find_download_channel_executable() -> Result<PathBuf> {
 
     bail!("download_channel binary not found. Build it with `cargo build --bin download_channel`.");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn collect_channels_dedupes_entries() -> Result<()> {
+        let temp = tempdir()?;
+        let videos_dir = temp.path().join("videos");
+        fs::create_dir_all(&videos_dir)?;
+        let info_path = videos_dir.join("sample.info.json");
+        File::create(&info_path)?.write_all(br#"{"channel_url":"HTTPS://YouTube.com/@Test/"}"#)?;
+        let mut map = BTreeMap::new();
+        collect_channels(&videos_dir, &mut map)?;
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.values().next().unwrap(), "HTTPS://YouTube.com/@Test/");
+        Ok(())
+    }
+
+    #[test]
+    fn extract_channel_url_prefers_channel_field() -> Result<()> {
+        let temp = tempdir()?;
+        let file_path = temp.path().join("a.info.json");
+        File::create(&file_path)?.write_all(
+            br#"{"channel_url":"https://example.com","uploader_url":"https://other"}"#,
+        )?;
+        let url = extract_channel_url(&file_path)?.expect("url parsed");
+        assert_eq!(url, "https://example.com");
+        Ok(())
+    }
+
+    #[test]
+    fn canonicalize_channel_url_strips_trailing_slash() {
+        assert_eq!(
+            canonicalize_channel_url("HTTPS://Example.com/Channel/"),
+            "https://example.com/channel"
+        );
+    }
+
+    #[test]
+    fn find_download_channel_uses_env_var() -> Result<()> {
+        let temp = tempdir()?;
+        let fake = temp.path().join("download_channel");
+        File::create(&fake)?;
+        unsafe {
+            env::set_var("CARGO_BIN_EXE_download_channel", &fake);
+        }
+        let path = find_download_channel_executable()?;
+        assert_eq!(path, fake);
+        unsafe {
+            env::remove_var("CARGO_BIN_EXE_download_channel");
+        }
+        Ok(())
+    }
+}

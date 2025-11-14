@@ -53,4 +53,82 @@ describe('UserDataStore', () => {
     expect(store.getWatchProgress('vid-4')).toBe(0.2);
     expect(store.isWatched('vid-4')).toBe(false);
   });
+
+  it('handles subscriptions, stats, exports, and imports', () => {
+    const store = new UserDataStore('test-advanced');
+    window.dispatchEvent.mockClear();
+    expect(store.toggleSubscription('channel-1', { name: 'Channel' })).toBe(true);
+    expect(store.isSubscribed('channel-1')).toBe(true);
+    expect(
+      window.dispatchEvent.mock.calls.some(
+        ([event]) => event.detail && event.detail.type === 'subscription'
+      )
+    ).toBe(true);
+
+    const stats = store.getStats();
+    expect(stats.playlists).toBeGreaterThan(0);
+
+    const exported = store.exportToString();
+    expect(() => JSON.parse(exported)).not.toThrow();
+
+    const originalCreateElement = document.createElement;
+    const originalAppendChild = document.body.appendChild;
+    const originalRemoveChild = document.body.removeChild;
+    const originalCreateObjectURL = global.URL.createObjectURL;
+    const originalRevokeObjectURL = global.URL.revokeObjectURL;
+    const link = {
+      click: jest.fn(),
+      set href(value) {
+        this._href = value;
+      },
+      get href() {
+        return this._href;
+      },
+      set download(value) {
+        this._download = value;
+      },
+      get download() {
+        return this._download;
+      },
+      style: {}
+    };
+    document.createElement = jest.fn().mockReturnValue(link);
+    document.body.appendChild = jest.fn();
+    document.body.removeChild = jest.fn();
+    global.URL.createObjectURL = jest.fn().mockReturnValue('blob:123');
+    global.URL.revokeObjectURL = jest.fn();
+
+    store.downloadExport('custom.json');
+    expect(link.click).toHaveBeenCalled();
+    expect(document.body.appendChild).toHaveBeenCalledWith(link);
+    expect(document.body.removeChild).toHaveBeenCalledWith(link);
+    document.createElement = originalCreateElement;
+    document.body.appendChild = originalAppendChild;
+    document.body.removeChild = originalRemoveChild;
+    global.URL.createObjectURL = originalCreateObjectURL;
+    global.URL.revokeObjectURL = originalRevokeObjectURL;
+
+    expect(() => store.importFromString('{"data":{}}')).not.toThrow();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => store.importFromString('bad json')).toThrow();
+    errorSpy.mockRestore();
+  });
+
+  it('dispatches events for each save pathway', () => {
+    const store = new UserDataStore('test-events');
+    window.dispatchEvent.mockClear();
+
+    store.addToPlaylist('Favorites', 'vid', {});
+    store.toggleLike('vid');
+    store.setWatchProgress('vid', 0.5, {});
+    store.toggleSubscription('channel');
+    store.importFromString(JSON.stringify({ data: store.getSnapshot() }));
+
+    const types = window.dispatchEvent.mock.calls
+      .map(([event]) => event.detail && event.detail.type)
+      .filter(Boolean);
+    expect(types).toEqual(
+      expect.arrayContaining(['playlist', 'reaction', 'watch', 'subscription', 'import'])
+    );
+  });
 });
