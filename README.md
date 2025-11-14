@@ -4,3 +4,14 @@ A youtube frontend clone, entirely written from the gound up in HTMlL, CSS and j
 There is no account system, but history and likes/dislikes still work. You can save your cookies via an ID which contains your likes/dislikes/playlists/history and is unique to you so you can erase your cookies and still have the same experience on all your devices. There is also no ad. It also is not in violation of youtube copyright as all icons are taken from material UI and open-licensed, and it does NOT serve videos from youtube directly or indirectly, therefore there is no violation of youtube's TOS as this makes NO calls to youtube.com or any google-owned subdomains.
 
 The Javascript caches pages and loads them only one time via a service worker to have instant subsequent loading times of non video-related assets for maximum speed and responsiveness. Pages are drawn into a container and which is then deleted and recreated when changing pages to keep everything in the same page. Page structure is mainly in the javascript files, which manipulate the HTML in real time.
+
+# Rust backend
+
+Compile and get the binaries in the current directory:
+
+```
+cargo clean && cargo build --release
+cp target/release/backend target/release/download_channel target/release/routine_update .
+```
+
+Use the rust backend:

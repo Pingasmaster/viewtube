@@ -1,0 +1,1177 @@
+use anyhow::{Context, Result, bail};
+use chrono::{NaiveDate, Utc};
+use newtube_tools::metadata::{
+    CommentRecord, MetadataStore, SubtitleCollection, SubtitleTrack, VideoRecord, VideoSource,
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::env;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+const BASE_DIR: &str = "/yt";
+const VIDEOS_SUBDIR: &str = "videos";
+const SHORTS_SUBDIR: &str = "shorts";
+const SUBTITLES_SUBDIR: &str = "subtitles";
+const THUMBNAILS_SUBDIR: &str = "thumbnails";
+const COMMENTS_SUBDIR: &str = "comments";
+const ARCHIVE_FILE: &str = "download-archive.txt";
+const COOKIES_FILE: &str = "cookies.txt";
+const WWW_ROOT: &str = "/www/newtube.com";
+const METADATA_DB_FILE: &str = "metadata.db";
+
+struct Paths {
+    base: PathBuf,
+    videos: PathBuf,
+    shorts: PathBuf,
+    subtitles: PathBuf,
+    thumbnails: PathBuf,
+    comments: PathBuf,
+    archive: PathBuf,
+    cookies: PathBuf,
+    www_root: PathBuf,
+    metadata_db: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct InfoJson {
+    #[serde(default)]
+    formats: Vec<FormatEntry>,
+}
+
+#[derive(Deserialize)]
+struct FormatEntry {
+    #[serde(rename = "format_id")]
+    format_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct VideoInfo {
+    id: String,
+    title: Option<String>,
+    fulltitle: Option<String>,
+    description: Option<String>,
+    like_count: Option<i64>,
+    dislike_count: Option<i64>,
+    view_count: Option<i64>,
+    upload_date: Option<String>,
+    #[serde(default)]
+    release_timestamp: Option<i64>,
+    uploader: Option<String>,
+    channel: Option<String>,
+    channel_id: Option<String>,
+    channel_url: Option<String>,
+    #[serde(rename = "channel_follower_count")]
+    channel_follower_count: Option<i64>,
+    duration: Option<i64>,
+    #[serde(rename = "duration_string")]
+    duration_string: Option<String>,
+    thumbnails: Option<Vec<ThumbnailInfo>>,
+    tags: Option<Vec<String>>,
+    comment_count: Option<i64>,
+    #[serde(default)]
+    subtitles: Option<HashMap<String, Vec<SubtitleInfo>>>,
+    #[serde(default, rename = "automatic_captions")]
+    automatic_captions: Option<HashMap<String, Vec<SubtitleInfo>>>,
+    formats: Option<Vec<FormatInfo>>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct ThumbnailInfo {
+    url: Option<String>,
+    width: Option<i64>,
+    height: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct SubtitleInfo {
+    url: Option<String>,
+    ext: Option<String>,
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FormatInfo {
+    #[serde(rename = "format_id")]
+    format_id: Option<String>,
+    format_note: Option<String>,
+    width: Option<i64>,
+    height: Option<i64>,
+    fps: Option<f64>,
+    ext: Option<String>,
+    vcodec: Option<String>,
+    acodec: Option<String>,
+    filesize: Option<i64>,
+    #[serde(rename = "filesize_approx")]
+    filesize_approx: Option<i64>,
+    #[serde(rename = "dynamic_range")]
+    dynamic_range: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct RawComment {
+    id: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    like_count: Option<i64>,
+    #[serde(default)]
+    timestamp: Option<i64>,
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    author_is_uploader: bool,
+    #[serde(default)]
+    author_is_channel_owner: bool,
+    #[serde(default)]
+    is_favorited: bool,
+    #[serde(default)]
+    reply_count: Option<i64>,
+    #[serde(default)]
+    time_text: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum MediaKind {
+    Video,
+    Short,
+}
+
+fn main() -> Result<()> {
+    let mut args = env::args().skip(1);
+    let channel_url = match args.next() {
+        Some(url) => url,
+        None => {
+            eprintln!("Usage: download_channel <channel_url>");
+            eprintln!("Example: download_channel https://www.youtube.com/@channelname");
+            std::process::exit(1);
+        }
+    };
+
+    ensure_program_available("yt-dlp")?;
+
+    let paths = Paths::new();
+    paths.prepare()?;
+    let mut metadata =
+        MetadataStore::open(&paths.metadata_db).context("initializing metadata database")?;
+
+    println!("===================================");
+    println!("YouTube Channel Downloader");
+    println!("===================================");
+    println!("Channel: {}", channel_url);
+    println!("Base directory: {}", paths.base.display());
+    println!();
+
+    println!("Starting download process...");
+    println!();
+
+    let mut archive = load_archive(&paths.archive)?;
+
+    download_collection(
+        "regular videos",
+        format!("{}/videos", &channel_url),
+        Some("!is_live & original_url!*=/shorts/"),
+        &paths.videos,
+        &paths,
+        &mut archive,
+        MediaKind::Video,
+        &mut metadata,
+    )?;
+
+    download_collection(
+        "shorts",
+        format!("{}/shorts", &channel_url),
+        Some("original_url*=/shorts/"),
+        &paths.shorts,
+        &paths,
+        &mut archive,
+        MediaKind::Short,
+        &mut metadata,
+    )?;
+
+    println!();
+    println!("===================================");
+    println!("Download complete!");
+    println!("===================================");
+    println!("Videos: {}", paths.videos.display());
+    println!("Shorts: {}", paths.shorts.display());
+    println!("Subtitles: {}", paths.subtitles.display());
+    println!("Thumbnails: {}", paths.thumbnails.display());
+    println!("Archive: {}", paths.archive.display());
+    println!();
+    println!("Metadata files:");
+    println!("  - <video_id>.info.json (video metadata)");
+    println!("  - <video_id>.description (video description)");
+    println!("  - <video_id>.jpg (thumbnail)");
+    println!();
+    println!("Next steps:");
+    println!("1. Download likes/dislikes data separately");
+    println!("2. Download comments data separately");
+    println!("3. Process .info.json files to populate IndexedDB");
+
+    Ok(())
+}
+
+impl Paths {
+    fn new() -> Self {
+        let base = PathBuf::from(BASE_DIR);
+        let videos = base.join(VIDEOS_SUBDIR);
+        let shorts = base.join(SHORTS_SUBDIR);
+        let subtitles = base.join(SUBTITLES_SUBDIR);
+        let thumbnails = base.join(THUMBNAILS_SUBDIR);
+        let comments = base.join(COMMENTS_SUBDIR);
+        let archive = base.join(ARCHIVE_FILE);
+        let cookies = base.join(COOKIES_FILE);
+        let www_root = PathBuf::from(WWW_ROOT);
+        let metadata_db = www_root.join(METADATA_DB_FILE);
+
+        Self {
+            base,
+            videos,
+            shorts,
+            subtitles,
+            thumbnails,
+            comments,
+            archive,
+            cookies,
+            www_root,
+            metadata_db,
+        }
+    }
+
+    fn prepare(&self) -> Result<()> {
+        fs::create_dir_all(&self.videos)
+            .with_context(|| format!("creating {}", self.videos.display()))?;
+        fs::create_dir_all(&self.shorts)
+            .with_context(|| format!("creating {}", self.shorts.display()))?;
+        fs::create_dir_all(&self.subtitles)
+            .with_context(|| format!("creating {}", self.subtitles.display()))?;
+        fs::create_dir_all(&self.thumbnails)
+            .with_context(|| format!("creating {}", self.thumbnails.display()))?;
+        fs::create_dir_all(&self.comments)
+            .with_context(|| format!("creating {}", self.comments.display()))?;
+        fs::create_dir_all(&self.www_root)
+            .with_context(|| format!("creating {}", self.www_root.display()))?;
+        Ok(())
+    }
+}
+
+fn ensure_program_available(name: &str) -> Result<()> {
+    let status = Command::new(name)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => bail!("{} is installed but returned a failure status", name),
+        Err(err) => bail!("{} is not installed or not in PATH: {}", name, err),
+    }
+}
+
+fn load_archive(path: &Path) -> Result<HashSet<String>> {
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut entries = HashSet::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if let Some(id) = line.split_whitespace().last() {
+            if !id.is_empty() {
+                entries.insert(id.to_owned());
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+fn append_to_archive(path: &Path, video_id: &str) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening archive {}", path.display()))?;
+    writeln!(file, "youtube {}", video_id)
+        .with_context(|| format!("writing archive entry for {}", video_id))?;
+    Ok(())
+}
+
+fn download_collection(
+    label: &str,
+    list_url: String,
+    filter: Option<&str>,
+    output_dir: &Path,
+    paths: &Paths,
+    archive: &mut HashSet<String>,
+    media_kind: MediaKind,
+    metadata: &mut MetadataStore,
+) -> Result<()> {
+    println!("Getting list of {}...", label);
+
+    let ids = get_video_ids(&list_url, filter)?;
+
+    if ids.is_empty() {
+        println!("No {} found", label);
+        println!();
+        return Ok(());
+    }
+
+    let total = ids.len();
+    println!("Found {} {}", total, label);
+    println!();
+
+    for (index, video_id) in ids.iter().enumerate() {
+        let current = index + 1;
+        if let Err(err) = process_media_entry(
+            video_id, current, total, output_dir, paths, archive, media_kind, metadata,
+        ) {
+            eprintln!("  Warning: failed to process {}: {}", video_id, err);
+        }
+    }
+
+    println!();
+    println!(
+        "{} download complete!",
+        label
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string() + &label[1..])
+            .unwrap_or_else(|| label.to_string()),
+    );
+    println!();
+
+    Ok(())
+}
+
+fn process_media_entry(
+    video_id: &str,
+    current: usize,
+    total: usize,
+    output_dir: &Path,
+    paths: &Paths,
+    archive: &mut HashSet<String>,
+    media_kind: MediaKind,
+    metadata: &mut MetadataStore,
+) -> Result<()> {
+    let already_downloaded = archive.contains(video_id);
+    let video_url = format!("https://www.youtube.com/watch?v={video_id}");
+
+    if already_downloaded {
+        println!(
+            "[{}/{}] Refreshing metadata for {}",
+            current, total, video_id
+        );
+    } else {
+        println!(
+            "[{}/{}] Downloading and indexing {}",
+            current, total, video_id
+        );
+        if let Err(err) = download_video_all_formats(video_id, output_dir, paths) {
+            eprintln!("  Warning: failed to download {}: {}", video_id, err);
+        } else {
+            append_to_archive(&paths.archive, video_id)?;
+            archive.insert(video_id.to_owned());
+        }
+    }
+
+    if let Err(err) = refresh_metadata(
+        video_id, &video_url, output_dir, paths, media_kind, metadata,
+    ) {
+        eprintln!(
+            "  Warning: metadata refresh failed for {}: {}",
+            video_id, err
+        );
+    }
+
+    Ok(())
+}
+
+fn refresh_metadata(
+    video_id: &str,
+    video_url: &str,
+    output_dir: &Path,
+    paths: &Paths,
+    media_kind: MediaKind,
+    metadata: &mut MetadataStore,
+) -> Result<()> {
+    let info = fetch_video_info(video_id, video_url, output_dir, paths)?;
+    let record = build_video_record(video_id, &info, output_dir, media_kind, paths)?;
+
+    match media_kind {
+        MediaKind::Video => metadata.upsert_video(&record)?,
+        MediaKind::Short => metadata.upsert_short(&record)?,
+    }
+
+    let subtitles = collect_subtitles(video_id, &info, paths, media_kind)?;
+    metadata.upsert_subtitles(&subtitles)?;
+
+    let comments = fetch_comments(video_id, video_url, paths)?;
+    metadata.replace_comments(video_id, &comments)?;
+
+    Ok(())
+}
+
+fn fetch_video_info(
+    video_id: &str,
+    video_url: &str,
+    output_dir: &Path,
+    paths: &Paths,
+) -> Result<VideoInfo> {
+    let mut command = Command::new("yt-dlp");
+    command
+        .arg("--dump-single-json")
+        .arg("--skip-download")
+        .arg("--no-warnings")
+        .arg("--no-progress")
+        .arg(video_url);
+
+    if paths.cookies.exists() {
+        command
+            .arg("--cookies")
+            .arg(paths.cookies.to_string_lossy().to_string());
+    }
+
+    let output = command
+        .output()
+        .with_context(|| format!("fetching metadata for {}", video_url))?;
+
+    if !output.status.success() {
+        bail!(
+            "metadata command failed for {} (status {})",
+            video_url,
+            output.status
+        );
+    }
+
+    let raw_json =
+        String::from_utf8(output.stdout).context("parsing metadata JSON response as UTF-8")?;
+    let info: VideoInfo = serde_json::from_str(&raw_json).context("deserializing metadata JSON")?;
+
+    let info_dir = output_dir.join(video_id);
+    fs::create_dir_all(&info_dir)
+        .with_context(|| format!("ensuring info directory {}", info_dir.display()))?;
+
+    let info_path = info_dir.join(format!("{}.info.json", video_id));
+    fs::write(&info_path, raw_json).with_context(|| format!("writing {}", info_path.display()))?;
+
+    if let Some(description) = &info.description {
+        let desc_path = info_dir.join(format!("{}.description", video_id));
+        fs::write(&desc_path, description)
+            .with_context(|| format!("writing {}", desc_path.display()))?;
+    }
+
+    Ok(info)
+}
+
+fn build_video_record(
+    video_id: &str,
+    info: &VideoInfo,
+    output_dir: &Path,
+    media_kind: MediaKind,
+    paths: &Paths,
+) -> Result<VideoRecord> {
+    let title = info
+        .fulltitle
+        .as_deref()
+        .or(info.title.as_deref())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(video_id);
+
+    let description = info.description.clone().unwrap_or_default();
+
+    let upload_date = info
+        .upload_date
+        .as_deref()
+        .and_then(upload_date_to_iso)
+        .or_else(|| info.release_timestamp.and_then(timestamp_to_iso));
+
+    let duration = info.duration;
+    let duration_text = info
+        .duration_string
+        .clone()
+        .or_else(|| duration.map(format_duration));
+
+    let author = info.channel.clone().or_else(|| info.uploader.clone());
+
+    let slug = media_kind_slug(media_kind);
+
+    let thumbnails = collect_thumbnails(video_id, paths, slug)?;
+    let thumbnail_url = thumbnails.first().cloned();
+
+    let sources = collect_sources(video_id, info, output_dir, slug)?;
+
+    let extras = json!({
+        "channelId": info.channel_id,
+        "commentCount": info.comment_count,
+    });
+
+    Ok(VideoRecord {
+        videoid: video_id.to_owned(),
+        title: title.to_owned(),
+        description,
+        likes: info.like_count,
+        dislikes: info.dislike_count,
+        views: info.view_count,
+        upload_date,
+        author,
+        subscriber_count: info.channel_follower_count,
+        duration,
+        duration_text,
+        channel_url: info.channel_url.clone(),
+        thumbnail_url,
+        tags: info.tags.clone().unwrap_or_default(),
+        thumbnails,
+        extras,
+        sources,
+    })
+}
+
+fn collect_subtitles(
+    video_id: &str,
+    info: &VideoInfo,
+    paths: &Paths,
+    media_kind: MediaKind,
+) -> Result<SubtitleCollection> {
+    let slug = media_kind_slug(media_kind);
+    let subtitles_dir = paths.subtitles.join(video_id);
+    let mut tracks = Vec::new();
+    let display_names = subtitle_name_map(info);
+
+    if subtitles_dir.exists() {
+        for entry in fs::read_dir(&subtitles_dir)
+            .with_context(|| format!("reading subtitles dir {}", subtitles_dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.path().is_file() {
+                continue;
+            }
+
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .unwrap_or_else(|os| os.to_string_lossy().into_owned());
+
+            let (without_ext, _ext) = match file_name.rsplit_once('.') {
+                Some(parts) => parts,
+                None => continue,
+            };
+
+            let prefix = format!("{video_id}.");
+            let code = match without_ext.strip_prefix(&prefix) {
+                Some(code) => code,
+                None => continue,
+            };
+
+            let name = display_names
+                .get(code)
+                .cloned()
+                .unwrap_or_else(|| code.to_ascii_uppercase());
+
+            tracks.push(SubtitleTrack {
+                code: code.to_owned(),
+                name,
+                url: format!("/api/{slug}/{}/subtitles/{}", video_id, code),
+                path: Some(entry.path().to_string_lossy().into_owned()),
+            });
+        }
+    }
+
+    if tracks.is_empty() {
+        if let Some(remote) = first_remote_subtitle(info) {
+            tracks.push(remote);
+        }
+    }
+
+    Ok(SubtitleCollection {
+        videoid: video_id.to_owned(),
+        languages: tracks,
+    })
+}
+
+fn subtitle_name_map(info: &VideoInfo) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    if let Some(subs) = &info.subtitles {
+        for (code, entries) in subs {
+            if let Some(entry) = entries.first() {
+                if let Some(name) = &entry.name {
+                    names.insert(code.to_owned(), name.to_owned());
+                }
+            }
+        }
+    }
+    if let Some(auto) = &info.automatic_captions {
+        for (code, entries) in auto {
+            if let Some(entry) = entries.first() {
+                if let Some(name) = &entry.name {
+                    names
+                        .entry(code.to_owned())
+                        .or_insert_with(|| name.to_owned());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn first_remote_subtitle(info: &VideoInfo) -> Option<SubtitleTrack> {
+    let iter = info.subtitles.iter().chain(info.automatic_captions.iter());
+
+    for map in iter {
+        for (code, entries) in map {
+            if let Some(entry) = entries.first() {
+                if let Some(url) = &entry.url {
+                    let name = entry
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| code.to_ascii_uppercase());
+                    return Some(SubtitleTrack {
+                        code: code.to_owned(),
+                        name,
+                        url: url.clone(),
+                        path: None,
+                    });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn collect_thumbnails(video_id: &str, paths: &Paths, slug: &str) -> Result<Vec<String>> {
+    let thumb_dir = paths.thumbnails.join(video_id);
+    if !thumb_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut thumbs = Vec::new();
+    for entry in fs::read_dir(&thumb_dir)
+        .with_context(|| format!("reading thumbnails dir {}", thumb_dir.display()))?
+    {
+        let entry = entry?;
+        if !entry.path().is_file() {
+            continue;
+        }
+        let file_name = entry
+            .file_name()
+            .into_string()
+            .unwrap_or_else(|os| os.to_string_lossy().into_owned());
+        thumbs.push(file_name);
+    }
+
+    thumbs.sort();
+    Ok(thumbs
+        .into_iter()
+        .map(|name| format!("/api/{slug}/{}/thumbnails/{name}", video_id))
+        .collect())
+}
+
+fn collect_sources(
+    video_id: &str,
+    info: &VideoInfo,
+    output_dir: &Path,
+    slug: &str,
+) -> Result<Vec<VideoSource>> {
+    let mut sources = Vec::new();
+    let base_dir = output_dir.join(video_id);
+    if !base_dir.exists() {
+        return Ok(sources);
+    }
+
+    if let Some(formats) = &info.formats {
+        for format in formats {
+            let format_id = match format.format_id.as_deref() {
+                Some(id) => id,
+                None => continue,
+            };
+
+            if format
+                .vcodec
+                .as_deref()
+                .map_or(false, |codec| codec.eq_ignore_ascii_case("none"))
+                || format
+                    .acodec
+                    .as_deref()
+                    .map_or(false, |codec| codec.eq_ignore_ascii_case("none"))
+            {
+                continue;
+            }
+
+            let sanitized = sanitize_format_id(format_id);
+            let ext = format.ext.as_deref().unwrap_or("mp4");
+            let mut path = base_dir.join(format!("{video_id}_{sanitized}"));
+            path.set_extension(ext);
+
+            if !path.exists() {
+                continue;
+            }
+
+            let quality_label = format
+                .format_note
+                .clone()
+                .or_else(|| format_quality_label(format.height, format.dynamic_range.as_deref()));
+
+            let mime_type = Some(mime_from_extension(ext));
+            let file_size = format.filesize.or(format.filesize_approx);
+
+            sources.push(VideoSource {
+                format_id: format_id.to_owned(),
+                quality_label,
+                width: format.width,
+                height: format.height,
+                fps: format.fps,
+                mime_type,
+                ext: Some(ext.to_owned()),
+                file_size,
+                url: format!("/api/{slug}/{}/streams/{}", video_id, sanitized),
+                path: Some(path.to_string_lossy().into_owned()),
+            });
+        }
+    }
+
+    Ok(sources)
+}
+
+fn fetch_comments(video_id: &str, video_url: &str, paths: &Paths) -> Result<Vec<CommentRecord>> {
+    let comments_dir = paths.comments.join(video_id);
+    fs::create_dir_all(&comments_dir)
+        .with_context(|| format!("creating comments dir {}", comments_dir.display()))?;
+
+    let output_pattern = comments_dir.join(video_id);
+    let mut command = Command::new("yt-dlp");
+    command
+        .arg("--skip-download")
+        .arg("--write-comments")
+        .arg("--no-warnings")
+        .arg("--no-progress")
+        .arg("--max-comments")
+        .arg("500")
+        .arg("--force-overwrites")
+        .arg("--output")
+        .arg(output_pattern.to_string_lossy().to_string())
+        .arg(video_url);
+
+    if paths.cookies.exists() {
+        command
+            .arg("--cookies")
+            .arg(paths.cookies.to_string_lossy().to_string());
+    }
+
+    match command.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!(
+                "  Warning: comment extraction failed for {} (status {})",
+                video_id, status
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "  Warning: unable to execute comment extraction for {}: {}",
+                video_id, err
+            );
+        }
+    }
+
+    let comments_path = comments_dir.join(format!("{}.comments.json", video_id));
+    if !comments_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = File::open(&comments_path)
+        .with_context(|| format!("opening {}", comments_path.display()))?;
+    let reader = BufReader::new(file);
+    let json_value: Value = serde_json::from_reader(reader)
+        .with_context(|| format!("parsing {}", comments_path.display()))?;
+
+    let comments_array = match json_value {
+        Value::Array(arr) => arr,
+        Value::Object(mut map) => match map.remove("comments") {
+            Some(Value::Array(arr)) => arr,
+            Some(other) => serde_json::from_value::<Vec<Value>>(other).unwrap_or_default(),
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+
+    let mut comments = Vec::new();
+    for value in comments_array {
+        match serde_json::from_value::<RawComment>(value) {
+            Ok(raw) => {
+                let time_posted = raw
+                    .timestamp
+                    .and_then(timestamp_to_iso)
+                    .or_else(|| raw.time_text.clone())
+                    .or_else(|| Some(Utc::now().to_rfc3339()));
+
+                comments.push(CommentRecord {
+                    id: raw.id,
+                    videoid: video_id.to_owned(),
+                    author: raw.author.unwrap_or_default(),
+                    text: raw.text.unwrap_or_default(),
+                    likes: raw.like_count,
+                    time_posted,
+                    parent_comment_id: raw.parent,
+                    status_likedbycreator: raw.author_is_channel_owner || raw.author_is_uploader,
+                    reply_count: raw.reply_count,
+                });
+            }
+            Err(err) => {
+                eprintln!("  Warning: could not parse comment entry: {}", err);
+            }
+        }
+    }
+
+    Ok(comments)
+}
+
+fn format_quality_label(height: Option<i64>, dynamic_range: Option<&str>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(h) = height {
+        parts.push(format!("{h}p"));
+    }
+    if let Some(range) = dynamic_range {
+        if !range.is_empty() {
+            parts.push(range.to_owned());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn mime_from_extension(ext: &str) -> String {
+    match ext {
+        "mp4" => "video/mp4".to_owned(),
+        "mkv" => "video/x-matroska".to_owned(),
+        "webm" => "video/webm".to_owned(),
+        other => format!("video/{other}"),
+    }
+}
+
+fn media_kind_slug(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Video => "videos",
+        MediaKind::Short => "shorts",
+    }
+}
+
+fn upload_date_to_iso(value: &str) -> Option<String> {
+    if value.len() != 8 {
+        return None;
+    }
+    let year = &value[0..4];
+    let month = &value[4..6];
+    let day = &value[6..8];
+    let naive = NaiveDate::from_ymd_opt(year.parse().ok()?, month.parse().ok()?, day.parse().ok()?);
+    let naive = naive?.and_hms_opt(0, 0, 0)?;
+    Some(format!("{}Z", naive.format("%Y-%m-%dT%H:%M:%S")))
+}
+
+fn timestamp_to_iso(timestamp: i64) -> Option<String> {
+    chrono::DateTime::<Utc>::from_timestamp(timestamp, 0).map(|datetime| datetime.to_rfc3339())
+}
+
+fn format_duration(duration: i64) -> String {
+    let hours = duration / 3600;
+    let minutes = (duration % 3600) / 60;
+    let seconds = duration % 60;
+
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+fn get_video_ids(list_url: &str, filter: Option<&str>) -> Result<Vec<String>> {
+    let mut command = Command::new("yt-dlp");
+    command
+        .arg("--flat-playlist")
+        .arg("--get-id")
+        .arg("--ignore-errors");
+
+    if let Some(filter) = filter {
+        command.arg("--match-filter").arg(filter);
+    }
+
+    command.arg(list_url);
+
+    let output = command
+        .output()
+        .with_context(|| format!("retrieving playlist from {}", list_url))?;
+
+    if !output.status.success() {
+        bail!(
+            "failed to list videos for {} (status: {})",
+            list_url,
+            output.status
+        );
+    }
+
+    let content = String::from_utf8_lossy(&output.stdout);
+    let ids = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|id| id.to_owned())
+        .collect();
+
+    Ok(ids)
+}
+
+fn download_video_all_formats(video_id: &str, output_dir: &Path, paths: &Paths) -> Result<()> {
+    let video_url = format!("https://www.youtube.com/watch?v={}", video_id);
+    let video_dir = output_dir.join(video_id);
+    fs::create_dir_all(&video_dir).with_context(|| format!("creating {}", video_dir.display()))?;
+
+    let base_output = video_dir.join(video_id);
+    let base_output_pattern = base_output.to_string_lossy().to_string();
+    let info_json_path = base_output.with_extension("info.json");
+
+    println!("Processing video: {}", video_id);
+
+    run_metadata_command(&video_url, &base_output_pattern, &paths.cookies);
+    run_subtitle_command(video_id, &video_url, &paths.subtitles, &paths.cookies);
+    run_thumbnail_command(video_id, &video_url, &paths.thumbnails, &paths.cookies);
+
+    let formats = collect_format_ids(&info_json_path, &video_url)?;
+
+    if formats.is_empty() {
+        println!("  No downloadable formats found for {}", video_id);
+        return Ok(());
+    }
+
+    for format_id in formats {
+        let safe_format_id = sanitize_format_id(&format_id);
+        let mut output_path = video_dir.join(format!("{}_{}", video_id, safe_format_id));
+        output_path.set_extension("%(ext)s");
+
+        println!("  Downloading format: {}", format_id);
+
+        let mut command = Command::new("yt-dlp");
+        command
+            .arg("--format")
+            .arg(&format_id)
+            .arg("--output")
+            .arg(output_path.to_string_lossy().to_string())
+            .arg("--no-embed-metadata")
+            .arg("--no-embed-subs")
+            .arg("--no-embed-thumbnail")
+            .arg("--no-overwrites")
+            .arg("--continue")
+            .arg("--ignore-errors")
+            .arg("--no-warnings")
+            .arg(&video_url);
+
+        if paths.cookies.exists() {
+            command
+                .arg("--cookies")
+                .arg(paths.cookies.to_string_lossy().to_string());
+        }
+
+        match command.status() {
+            Ok(status) if status.success() => {}
+            Ok(_) => {
+                eprintln!("    Failed to download format {}", format_id);
+            }
+            Err(err) => {
+                eprintln!("    Failed to download format {}: {}", format_id, err);
+            }
+        }
+    }
+
+    println!("  Completed: {}", video_id);
+
+    Ok(())
+}
+
+fn run_metadata_command(video_url: &str, output_pattern: &str, cookies: &Path) {
+    let mut command = Command::new("yt-dlp");
+    command
+        .arg("--write-info-json")
+        .arg("--write-description")
+        .arg("--write-thumbnail")
+        .arg("--skip-download")
+        .arg("--output")
+        .arg(output_pattern)
+        .arg(video_url);
+
+    if cookies.exists() {
+        command
+            .arg("--cookies")
+            .arg(cookies.to_string_lossy().to_string());
+    }
+
+    run_silent(command, "metadata");
+}
+
+fn run_subtitle_command(video_id: &str, video_url: &str, subtitles_dir: &Path, cookies: &Path) {
+    let target_dir = subtitles_dir.join(video_id);
+    if let Err(err) = fs::create_dir_all(&target_dir) {
+        eprintln!(
+            "  Warning: could not create subtitles directory {}: {}",
+            target_dir.display(),
+            err
+        );
+        return;
+    }
+
+    let output_pattern = target_dir.join(video_id).to_string_lossy().to_string();
+
+    let mut command = Command::new("yt-dlp");
+    command
+        .arg("--write-sub")
+        .arg("--write-auto-sub")
+        .arg("--sub-langs")
+        .arg("all")
+        .arg("--skip-download")
+        .arg("--output")
+        .arg(output_pattern)
+        .arg(video_url);
+
+    if cookies.exists() {
+        command
+            .arg("--cookies")
+            .arg(cookies.to_string_lossy().to_string());
+    }
+
+    run_silent(command, "subtitles");
+}
+
+fn run_thumbnail_command(video_id: &str, video_url: &str, thumbnails_dir: &Path, cookies: &Path) {
+    let target_dir = thumbnails_dir.join(video_id);
+    if let Err(err) = fs::create_dir_all(&target_dir) {
+        eprintln!(
+            "  Warning: could not create thumbnails directory {}: {}",
+            target_dir.display(),
+            err
+        );
+        return;
+    }
+
+    let output_pattern = target_dir.join(video_id).to_string_lossy().to_string();
+
+    let mut command = Command::new("yt-dlp");
+    command
+        .arg("--write-thumbnail")
+        .arg("--skip-download")
+        .arg("--output")
+        .arg(output_pattern)
+        .arg(video_url);
+
+    if cookies.exists() {
+        command
+            .arg("--cookies")
+            .arg(cookies.to_string_lossy().to_string());
+    }
+
+    run_silent(command, "thumbnails");
+}
+
+fn run_silent(mut command: Command, label: &str) {
+    match command.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!("  Warning: {} command exited with status {}", label, status);
+        }
+        Err(err) => {
+            eprintln!("  Warning: {} command failed: {}", label, err);
+        }
+    }
+}
+
+fn collect_format_ids(info_json_path: &Path, video_url: &str) -> Result<Vec<String>> {
+    let mut formats = BTreeSet::new();
+
+    if info_json_path.exists() {
+        if let Ok(file) = File::open(info_json_path) {
+            let reader = BufReader::new(file);
+            match serde_json::from_reader::<_, InfoJson>(reader) {
+                Ok(info) => {
+                    for entry in info.formats {
+                        if let Some(id) = entry.format_id {
+                            let trimmed = id.trim();
+                            if !trimmed.is_empty() {
+                                formats.insert(trimmed.to_owned());
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "  Warning: could not parse {}: {}",
+                        info_json_path.display(),
+                        err
+                    );
+                }
+            }
+        }
+    }
+
+    if formats.is_empty() {
+        println!("  Could not read formats from metadata, falling back to format listing");
+        let output = Command::new("yt-dlp")
+            .arg("-F")
+            .arg(video_url)
+            .output()
+            .with_context(|| format!("listing formats for {}", video_url))?;
+
+        if !output.status.success() {
+            eprintln!(
+                "  Warning: format listing failed for {} (status: {})",
+                video_url, output.status
+            );
+        } else {
+            let listing = String::from_utf8_lossy(&output.stdout);
+            for line in listing.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                if let Some(first) = trimmed.split_whitespace().next() {
+                    if first.eq_ignore_ascii_case("format") || first.eq_ignore_ascii_case("code") {
+                        continue;
+                    }
+                    if first
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_ascii_alphanumeric())
+                    {
+                        formats.insert(first.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(formats.into_iter().collect())
+}
+
+fn sanitize_format_id(format_id: &str) -> String {
+    format_id
+        .chars()
+        .map(|c| match c {
+            '/' | ':' | ' ' => '_',
+            _ => c,
+        })
+        .collect()
+}

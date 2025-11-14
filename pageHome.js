@@ -349,50 +349,79 @@ class Chips extends Component {
 class VideoGrid extends Component {
     constructor() {
         super();
-        this.videos = [
-            { title: "How to Build a YouTube Clone in HTML & CSS", channel: "WebDev Pro", views: "1.2M", time: "2 days ago", duration: "12:34" },
-            { title: "10 JavaScript Tips Every Developer Should Know", channel: "Code Master", views: "850K", time: "1 week ago", duration: "15:20" },
-            { title: "Amazing Nature Documentary | 4K Wildlife", channel: "Nature Films", views: "3.4M", time: "3 weeks ago", duration: "45:12" },
-            { title: "React Tutorial for Beginners 2025", channel: "Tech Academy", views: "2.1M", time: "5 days ago", duration: "28:45" },
-            { title: "Best Gaming Moments 2025 Compilation", channel: "Epic Gamers", views: "5.7M", time: "1 day ago", duration: "18:30" },
-            { title: "Latest Tech News | Week in Review", channel: "Tech Daily", views: "456K", time: "12 hours ago", duration: "10:15" },
-            { title: "Quick & Easy Dinner Recipes", channel: "Home Chef", views: "920K", time: "4 days ago", duration: "8:42" },
-            { title: "Full Body Workout - No Equipment Needed", channel: "Fitness Zone", views: "1.8M", time: "1 week ago", duration: "22:18" },
-            { title: "Exploring Tokyo: Hidden Gems Tour", channel: "Travel Vlog", views: "670K", time: "2 weeks ago", duration: "32:56" },
-            { title: "Stand Up Comedy - Best of 2025", channel: "Laugh Factory", views: "2.9M", time: "3 days ago", duration: "54:20" },
-            { title: "CSS Grid vs Flexbox - Complete Guide", channel: "WebDev Pro", views: "540K", time: "1 month ago", duration: "16:33" },
-            { title: "Morning Meditation for Beginners", channel: "Mindful Living", views: "380K", time: "6 days ago", duration: "11:22" },
-            { title: "New AI Tools That Will Blow Your Mind", channel: "Tech Academy", views: "4.2M", time: "2 days ago", duration: "19:47" },
-            { title: "Baking Perfect Sourdough Bread at Home", channel: "Home Chef", views: "1.1M", time: "1 week ago", duration: "14:28" },
-            { title: "Top 10 Moments in Sports History", channel: "Sports Network", views: "6.3M", time: "5 days ago", duration: "25:14" },
-            { title: "Acoustic Guitar Covers | Chill Playlist", channel: "Music Corner", views: "890K", time: "3 weeks ago", duration: "1:12:45" }
-        ];
+        this.videos = [];
         this.colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffeaa7', '#dfe6e9', '#6c5ce7', '#fd79a8'];
     }
 
     init() {
         this.element = document.createElement('div');
         this.element.className = 'video-grid';
-
-        this.videos.forEach((video, i) => {
-            const card = this.createVideoCard(video, i);
-            this.element.appendChild(card);
-        });
-
+        this.setLoading();
         return this.element;
     }
 
+    setLoading(message = 'Loading videos…') {
+        if (!this.element) {
+            return;
+        }
+        this.element.innerHTML = '';
+        const placeholder = document.createElement('div');
+        placeholder.className = 'video-grid-placeholder';
+        placeholder.textContent = message;
+        this.element.appendChild(placeholder);
+    }
+
+    setVideos(videos = []) {
+        this.videos = Array.isArray(videos) ? videos : [];
+        if (this.element) {
+            this.renderVideos();
+        }
+    }
+
+    renderVideos() {
+        if (!this.element) {
+            return;
+        }
+        this.element.innerHTML = '';
+
+        if (this.videos.length === 0) {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'video-grid-placeholder';
+            placeholder.textContent = 'No videos available yet.';
+            this.element.appendChild(placeholder);
+            return;
+        }
+
+        this.videos.forEach((video, index) => {
+            const card = this.createVideoCard(video, index);
+            this.element.appendChild(card);
+        });
+    }
+
     createVideoCard(video, index) {
-        const card = document.createElement('div');
+        const card = document.createElement('a');
         card.className = 'video-card';
+        card.href = `/watch?v=${encodeURIComponent(video.videoid)}`;
 
         const thumbnail = document.createElement('div');
         thumbnail.className = 'video-thumbnail';
-        thumbnail.style.background = this.colors[index % this.colors.length];
+        const thumbUrl =
+            video.thumbnailUrl ||
+            (Array.isArray(video.thumbnails) && video.thumbnails.length > 0
+                ? video.thumbnails[0]
+                : null);
+
+        if (thumbUrl) {
+            thumbnail.style.backgroundImage = `url(${thumbUrl})`;
+            thumbnail.style.backgroundSize = 'cover';
+            thumbnail.style.backgroundPosition = 'center';
+        } else {
+            thumbnail.style.background = this.colors[index % this.colors.length];
+        }
 
         const duration = document.createElement('div');
         duration.className = 'video-duration';
-        duration.textContent = video.duration;
+        duration.textContent = this.formatDuration(video.durationText, video.duration);
         thumbnail.appendChild(duration);
 
         const info = document.createElement('div');
@@ -401,21 +430,24 @@ class VideoGrid extends Component {
         const avatar = document.createElement('div');
         avatar.className = 'channel-avatar';
         avatar.style.background = this.colors[(index + 3) % this.colors.length];
+        avatar.textContent = this.getAvatarInitial(video.author);
 
         const details = document.createElement('div');
         details.className = 'video-details';
 
         const title = document.createElement('div');
         title.className = 'video-title';
-        title.textContent = video.title;
+        title.textContent = video.title || 'Untitled video';
 
         const channel = document.createElement('div');
         channel.className = 'video-meta';
-        channel.textContent = video.channel;
+        channel.textContent = video.author || 'Unknown channel';
 
         const meta = document.createElement('div');
         meta.className = 'video-meta';
-        meta.textContent = `${video.views} views • ${video.time}`;
+        meta.textContent = `${this.formatViews(video.views)} views • ${this.formatTime(
+            video.uploadDate
+        )}`;
 
         details.appendChild(title);
         details.appendChild(channel);
@@ -429,6 +461,86 @@ class VideoGrid extends Component {
 
         return card;
     }
+
+    getAvatarInitial(author) {
+        if (!author || typeof author !== 'string') {
+            return '•';
+        }
+        const trimmed = author.trim();
+        return trimmed ? trimmed.charAt(0).toUpperCase() : '•';
+    }
+
+    formatDuration(durationText, durationSeconds) {
+        if (durationText && typeof durationText === 'string') {
+            return durationText;
+        }
+        if (typeof durationSeconds !== 'number') {
+            return '';
+        }
+
+        const total = Math.max(0, Math.floor(durationSeconds));
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const seconds = total % 60;
+
+        if (hours > 0) {
+            return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds
+                .toString()
+                .padStart(2, '0')}`;
+        }
+
+        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    formatViews(views) {
+        const value = typeof views === 'number' ? views : Number(views);
+        if (!Number.isFinite(value) || value < 0) {
+            return '0';
+        }
+        if (value >= 1_000_000) {
+            return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+        }
+        if (value >= 1_000) {
+            return `${(value / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
+        }
+        return value.toString();
+    }
+
+    formatTime(uploadDate) {
+        if (!uploadDate) {
+            return 'Unknown';
+        }
+
+        const date = new Date(uploadDate);
+        if (Number.isNaN(date.getTime())) {
+            return 'Unknown';
+        }
+
+        const diffMs = Date.now() - date.getTime();
+        if (diffMs < 0) {
+            return 'Future';
+        }
+
+        const minutes = Math.floor(diffMs / (1000 * 60));
+        if (minutes < 1) return 'Just now';
+        if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+
+        const days = Math.floor(hours / 24);
+        if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+
+        const weeks = Math.floor(days / 7);
+        if (weeks < 5) return `${weeks} week${weeks === 1 ? '' : 's'} ago`;
+
+        const months = Math.floor(days / 30);
+        if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`;
+
+        const years = Math.floor(days / 365);
+        return `${years} year${years === 1 ? '' : 's'} ago`;
+    }
+}
 }
 
 // Main Content Component
@@ -458,6 +570,12 @@ class MainContent extends Component {
         window.addEventListener('resize', () => this.updateMargin());
 
         return this.element;
+    }
+
+    setVideos(videos) {
+        if (this.videoGrid) {
+            this.videoGrid.setVideos(videos);
+        }
     }
 
     updateMargin() {
@@ -499,16 +617,34 @@ class MainContent extends Component {
 
 // Home Page Class
 class HomePage {
-    constructor() {
+    constructor(services = {}) {
+        this.services = Object.assign(
+            {
+                ready: () => Promise.resolve(),
+                getVideos: () => Promise.resolve([]),
+                getShorts: () => Promise.resolve([])
+            },
+            services || {}
+        );
         this.container = null;
         this.header = null;
         this.sidebar = null;
         this.content = null;
     }
 
-    init() {
+    async init() {
         this.container = document.getElementById('app');
-        this.render();
+        const pageContainer = this.render();
+        this.container.appendChild(pageContainer);
+
+        try {
+            await this.services.ready();
+            const videos = await this.services.getVideos();
+            this.content.setVideos(videos || []);
+        } catch (error) {
+            console.error('⚠️ Failed to load home videos:', error);
+            this.content.setVideos([]);
+        }
     }
 
     render() {
@@ -526,23 +662,17 @@ class HomePage {
         pageContainer.appendChild(this.sidebar.init());
         pageContainer.appendChild(this.content.init());
         
-        // Add page container to app
-        this.container.appendChild(pageContainer);
+        return pageContainer;
     }
 
-    refresh() {
-        // Refresh the page by re-rendering the video grid with fresh data
-        if (this.content && this.content.videoGrid) {
-            // Destroy old video grid
-            this.content.videoGrid.destroy();
-            
-            // Create and render new video grid
-            this.content.videoGrid = new VideoGrid();
-            const newGridElement = this.content.videoGrid.init();
-            this.content.element.appendChild(newGridElement);
+    async refresh() {
+        try {
+            await this.services.ready();
+            const videos = await this.services.getVideos();
+            this.content.setVideos(videos || []);
+        } catch (error) {
+            console.error('⚠️ Failed to refresh home videos:', error);
         }
-        
-        console.log('Home page refreshed');
     }
 
     toggleSidebar() {

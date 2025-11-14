@@ -1,5 +1,5 @@
 // Service Worker for ViewTube
-const CACHE_NAME = 'viewtube-cache-v1';
+const CACHE_NAME = 'viewtube-static-v2';
 
 // List of files to cache on install
 const urlsToCache = [
@@ -58,40 +58,61 @@ self.addEventListener('activate', (event) => {
 
 // Fetch event - serve from cache, fallback to network
 self.addEventListener('fetch', (event) => {
+    const { request } = event;
+
+    if (request.method !== 'GET') {
+        return;
+    }
+
+    const url = new URL(request.url);
+    const isApiRequest = url.pathname.startsWith('/api/');
+    const isStreamRequest = url.pathname.includes('/streams/');
+    const isMetadataFile = url.pathname.endsWith('/metadata.db');
+
+    if (isApiRequest || isStreamRequest || isMetadataFile) {
+        // Never cache dynamic API/video responses
+        return;
+    }
+
+    const isNavigate = request.mode === 'navigate';
+    const isStaticAsset = urlsToCache.includes(url.pathname);
+
+    if (isNavigate) {
+        event.respondWith(
+            fetch(request).catch(() => caches.match('/index.html'))
+        );
+        return;
+    }
+
+    if (!isStaticAsset) {
+        return;
+    }
+
     event.respondWith(
-        caches.match(event.request)
-            .then((cachedResponse) => {
-                // Return cached version if available
-                if (cachedResponse) {
-                    console.log('[Service Worker] Serving from cache:', event.request.url);
-                    return cachedResponse;
-                }
-                
-                // Otherwise fetch from network
-                console.log('[Service Worker] Fetching from network:', event.request.url);
-                return fetch(event.request)
-                    .then((response) => {
-                        // Don't cache if not a success response
-                        if (!response || response.status !== 200 || response.type !== 'basic') {
-                            return response;
-                        }
-                        
-                        // Clone the response before caching
-                        const responseToCache = response.clone();
-                        
-                        caches.open(CACHE_NAME)
-                            .then((cache) => {
-                                cache.put(event.request, responseToCache);
-                            });
-                        
+        caches.match(request).then((cachedResponse) => {
+            if (cachedResponse) {
+                return cachedResponse;
+            }
+
+            return fetch(request)
+                .then((response) => {
+                    if (!response || response.status !== 200 || response.type !== 'basic') {
                         return response;
-                    })
-                    .catch((error) => {
-                        console.error('[Service Worker] Fetch failed:', error);
-                        // You can return a custom offline page here if needed
-                        throw error;
+                    }
+
+                    const responseToCache = response.clone();
+
+                    caches.open(CACHE_NAME).then((cache) => {
+                        cache.put(request, responseToCache);
                     });
-            })
+
+                    return response;
+                })
+                .catch((error) => {
+                    console.error('[Service Worker] Fetch failed:', error);
+                    throw error;
+                });
+        })
     );
 });
 

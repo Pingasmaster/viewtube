@@ -392,6 +392,9 @@ body {
 
 .page-home .video-card {
     cursor: pointer;
+    display: block;
+    text-decoration: none;
+    color: inherit;
 }
 
 .page-home .video-thumbnail {
@@ -432,6 +435,22 @@ body {
     border-radius: 50%;
     background: #303030;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.page-home .video-grid-placeholder {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: #9aa0a6;
+    padding: 32px 16px;
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    font-size: 0.95rem;
 }
 
 .page-home .video-details {
@@ -886,4 +905,3 @@ body {
         max-width: 100%;
     }
 }
-

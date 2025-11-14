@@ -19,6 +19,59 @@ class BaseViewer {
             this.container.innerHTML = '';
         }
     }
+
+    getSourceQualityValue(source) {
+        if (!source) {
+            return 0;
+        }
+
+        if (typeof source.height === 'number') {
+            return source.height;
+        }
+
+        if (typeof source.qualityLabel === 'string') {
+            const match = source.qualityLabel.match(/(\d{3,4})/);
+            if (match) {
+                return parseInt(match[1], 10);
+            }
+        }
+
+        if (typeof source.formatId === 'string') {
+            const match = source.formatId.match(/(\d{3,4})/);
+            if (match) {
+                return parseInt(match[1], 10);
+            }
+        }
+
+        return 0;
+    }
+
+    getSourceLabel(source) {
+        if (!source) {
+            return 'Source';
+        }
+
+        if (source.qualityLabel) {
+            return source.qualityLabel;
+        }
+
+        if (typeof source.height === 'number') {
+            return `${source.height}p`;
+        }
+
+        if (typeof source.formatId === 'string') {
+            return source.formatId;
+        }
+
+        return 'Source';
+    }
+
+    getSourceMimeType(source) {
+        if (source && source.mimeType) {
+            return source.mimeType;
+        }
+        return 'video/mp4';
+    }
 }
 
 // Regular Video Viewer
@@ -113,13 +166,13 @@ class VideoViewer extends BaseViewer {
 
         // Sort sources by quality (highest first)
         const sortedSources = [...this.videoData.sources].sort((a, b) => {
-            const qualityA = parseInt(a.quality) || 0;
-            const qualityB = parseInt(b.quality) || 0;
+            const qualityA = this.getSourceQualityValue(a);
+            const qualityB = this.getSourceQualityValue(b);
             return qualityB - qualityA;
         });
 
         return sortedSources.map(source => 
-            `<source src="${source.url}" type="video/mp4" label="${source.quality}">`
+            `<source src="${source.url}" type="${this.getSourceMimeType(source)}" label="${this.getSourceLabel(source)}">`
         ).join('');
     }
 
@@ -285,9 +338,17 @@ class ShortsViewer extends BaseViewer {
             return '';
         }
 
-        return this.videoData.sources.map(source => 
-            `<source src="${source.url}" type="video/mp4">`
-        ).join('');
+        const sortedSources = [...this.videoData.sources].sort((a, b) => {
+            const qualityA = this.getSourceQualityValue(a);
+            const qualityB = this.getSourceQualityValue(b);
+            return qualityB - qualityA;
+        });
+
+        return sortedSources
+            .map((source) =>
+                `<source src="${source.url}" type="${this.getSourceMimeType(source)}" label="${this.getSourceLabel(source)}">`
+            )
+            .join('');
     }
 
     setupPlayer() {
