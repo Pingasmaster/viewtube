@@ -1,3 +1,9 @@
+//! Minimal Axum backend that serves already-downloaded ViewTube assets.
+//!
+//! Incoming requests never touch YouTube. We only expose the SQLite metadata
+//! plus the media files stored locally on disk. The number of comments in here
+//! is intentionally high, per project request, to make future maintenance easy.
+
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -23,13 +29,20 @@ use serde::Serialize;
 use tokio::{fs::File, signal, task};
 use tokio_util::io::ReaderStream;
 
+// Directory layout constants. Keeping them centralized means the same values
+// can be used when serving both long-form and short-form videos.
 const BASE_DIR: &str = "/yt";
 const VIDEOS_SUBDIR: &str = "videos";
 const SHORTS_SUBDIR: &str = "shorts";
 const THUMBNAILS_SUBDIR: &str = "thumbnails";
 const SUBTITLES_SUBDIR: &str = "subtitles";
+
+// Network defaults. Both can be overridden through env vars/env but in most
+// deployments we bind to every interface on the host.
 const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8080;
+
+// SQLite database location that the downloader keeps up to date.
 const METADATA_DB_PATH: &str = "/www/newtube.com/metadata.db";
 
 #[derive(Clone, Copy)]
@@ -38,6 +51,12 @@ enum MediaCategory {
     Short,
 }
 
+/// Shared state injected into every Axum handler.
+///
+/// * `reader` performs blocking SQLite reads via `spawn_blocking`.
+/// * `cache` prevents repeated deserialization for hot endpoints such as the
+///   homepage feed.
+/// * `files` knows where audio/video/subtitle payloads live on disk.
 #[derive(Clone)]
 struct AppState {
     reader: Arc<MetadataReader>,
@@ -45,6 +64,10 @@ struct AppState {
     files: Arc<FilePaths>,
 }
 
+/// Very small in-memory cache to avoid re-querying SQLite on every request.
+///
+/// This keeps the backend stateless enough for systemd restarts yet vastly
+/// reduces IO for repeated playback of the same assets.
 struct ApiCache {
     videos: RwLock<Option<Vec<VideoRecord>>>,
     shorts: RwLock<Option<Vec<VideoRecord>>>,
@@ -56,6 +79,8 @@ struct ApiCache {
 }
 
 impl ApiCache {
+    /// Creates an empty cache. RwLocks allow parallel readers while writes
+    /// remain extremely short-lived (single assignment).
     fn new() -> Self {
         Self {
             videos: RwLock::new(None),
@@ -83,6 +108,7 @@ impl ApiCache {
     }
 }
 
+/// Materialized file-system locations used at runtime.
 struct FilePaths {
     videos: PathBuf,
     shorts: PathBuf,
@@ -91,6 +117,7 @@ struct FilePaths {
 }
 
 impl FilePaths {
+    /// Builds the folder structure from the constants at the top of the file.
     fn new() -> Self {
         let base = PathBuf::from(BASE_DIR);
         Self {
@@ -101,6 +128,7 @@ impl FilePaths {
         }
     }
 
+    /// Chooses either the `videos` or `shorts` directory.
     fn media_dir(&self, category: MediaCategory) -> &Path {
         match category {
             MediaCategory::Video => &self.videos,
@@ -116,6 +144,7 @@ struct ApiError {
 }
 
 impl ApiError {
+    /// Creates a 404 error with the provided message.
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -123,6 +152,7 @@ impl ApiError {
         }
     }
 
+    /// Creates a 500 error with the provided message.
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -146,6 +176,8 @@ type ApiResult<T> = Result<T, ApiError>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Allow overriding the port via environment variable while retaining the
+    // easy default for local testing.
     let port = std::env::var("NEWTUBE_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
@@ -159,6 +191,8 @@ async fn main() -> Result<()> {
         files: Arc::new(FilePaths::new()),
     };
 
+    // Each route is extremely small; helpers supplement anything that is shared
+    // between videos and shorts.
     let app = Router::new()
         .route("/api/bootstrap", get(bootstrap))
         .route("/api/videos", get(list_videos))
@@ -204,6 +238,8 @@ async fn main() -> Result<()> {
 }
 
 async fn shutdown_signal() {
+    // We do not propagate this error up because it only affects graceful
+    // shutdown; the process still terminates when Ctrl+C fires.
     if let Err(err) = signal::ctrl_c().await {
         eprintln!("Failed to install Ctrl+C handler: {}", err);
     }
@@ -267,6 +303,8 @@ async fn list_subtitles(
     id: String,
     slug: &'static str,
 ) -> ApiResult<Json<Vec<SubtitleInfo>>> {
+    // Build lightweight DTOs that point the frontend to the download
+    // endpoints; the actual subtitle JSON remains cached server side.
     let mut response = Vec::new();
     if let Some(collection) = state.get_subtitles(&id).await? {
         for track in collection.languages {
@@ -308,6 +346,8 @@ async fn download_subtitle(state: AppState, id: String, code: String) -> ApiResu
         .find(|track| track.code == code)
         .ok_or_else(|| ApiError::not_found("subtitle track not found"))?;
 
+    // Prefer the explicit filesystem path recorded during download, but fall
+    // back to the standard `videoid/lang` layout when missing.
     let path = track.path.map(PathBuf::from).unwrap_or_else(|| {
         state
             .files
@@ -358,6 +398,8 @@ async fn stream_media(
     id: String,
     format: String,
 ) -> ApiResult<Response> {
+    // We load metadata first so we can map the requested format slug to a file
+    // path and mime type before hitting the disk.
     let record = state.get_media(category, &id).await?;
 
     let source = record
@@ -385,6 +427,7 @@ async fn stream_media(
     .await
 }
 
+/// Lightweight response that exposes a download URL for each subtitle track.
 #[derive(serde::Serialize)]
 struct SubtitleInfo {
     code: String,
@@ -392,6 +435,7 @@ struct SubtitleInfo {
     url: String,
 }
 
+/// Payload returned by `/api/bootstrap` so the client can hydrate offline.
 #[derive(Clone, Serialize)]
 struct BootstrapPayload {
     videos: Vec<VideoRecord>,
@@ -401,6 +445,10 @@ struct BootstrapPayload {
 }
 
 impl AppState {
+    /// Returns a cached snapshot containing everything the SPA needs to boot
+    /// without hitting follow-up endpoints (videos, shorts, subtitles,
+    /// comments). The heavy lifting runs in a blocking task because SQLite is a
+    /// synchronous API.
     async fn get_bootstrap(&self) -> ApiResult<Arc<BootstrapPayload>> {
         if let Some(cached) = self.cache.bootstrap.read().clone() {
             return Ok(cached);
@@ -428,6 +476,8 @@ impl AppState {
         Ok(payload)
     }
 
+    /// Retrieves every video/short record, memoizing both the list and the
+    /// individual details map for quick follow-up lookups.
     async fn get_media_list(&self, category: MediaCategory) -> ApiResult<Vec<VideoRecord>> {
         if let Some(cached) = self.cache.media_list(category).read().clone() {
             return Ok(cached);
@@ -455,6 +505,8 @@ impl AppState {
         Ok(records)
     }
 
+    /// Loads metadata for a single video or short, preferring the cache before
+    /// falling back to SQLite.
     async fn get_media(&self, category: MediaCategory, videoid: &str) -> ApiResult<VideoRecord> {
         if let Some(record) = self
             .cache
@@ -488,6 +540,8 @@ impl AppState {
         Ok(record)
     }
 
+    /// Lazy-loads comment threads; we store them keyed by id because comment
+    /// payloads are far smaller than video blobs.
     async fn get_comments(&self, videoid: &str) -> ApiResult<Vec<CommentRecord>> {
         if let Some(cached) = self.cache.comments.read().get(videoid).cloned() {
             return Ok(cached);
@@ -510,6 +564,8 @@ impl AppState {
         Ok(comments)
     }
 
+    /// Provides subtitle metadata if available. Not every video has subtitles
+    /// so the API returns an Option.
     async fn get_subtitles(&self, videoid: &str) -> ApiResult<Option<SubtitleCollection>> {
         if let Some(cached) = self.cache.subtitles.read().get(videoid).cloned() {
             return Ok(Some(cached));
@@ -535,6 +591,9 @@ impl AppState {
     }
 }
 
+/// Normalizes a VideoSource URL by keeping only the trailing segment. During
+/// download we store files named `{videoid}_{format}` and the format parameter
+/// is the only piece users need to specify.
 fn source_key(source: &VideoSource) -> Option<String> {
     source.url.rsplit('/').next().map(|value| value.to_owned())
 }
@@ -544,6 +603,9 @@ async fn stream_file(path: PathBuf, mime: Option<Mime>) -> ApiResult<Response> {
         .await
         .map_err(|_| ApiError::not_found("file not found"))?;
 
+    // Either use the explicit mime provided by the VideoSource or infer it from
+    // the file extension. Setting CONTENT_TYPE hints allows browsers to stream
+    // video without sniffing.
     let guessed = mime.or_else(|| MimeGuess::from_path(&path).first());
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);

@@ -1,9 +1,21 @@
+//! Metadata persistence layer for ViewTube.
+//!
+//! All structs in this module mirror how metadata is serialized to disk and
+//! exposed to the API. The comments intentionally lean verbose so that anyone
+//! extending the tooling knows exactly why each piece exists and how the SQLite
+//! layout hangs together.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
+/// Description of a single downloadable media source (e.g. 1080p mp4).
+///
+/// Sources can point to files on disk (`path`) or merely expose a streaming
+/// endpoint backed by the API. The struct mirrors the JSON persisted inside the
+/// SQLite tables.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoSource {
     pub format_id: String,
@@ -26,6 +38,9 @@ pub struct VideoSource {
     pub path: Option<String>,
 }
 
+/// Rows stored in the `videos` and `shorts` tables.
+///
+/// Many fields are optional so we gracefully handle partially known metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoRecord {
     pub videoid: String,
@@ -62,6 +77,7 @@ pub struct VideoRecord {
     pub sources: Vec<VideoSource>,
 }
 
+/// Subtitle manifest for a single video.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitleTrack {
     pub code: String,
@@ -71,6 +87,7 @@ pub struct SubtitleTrack {
     pub path: Option<String>,
 }
 
+/// Collection of all subtitle tracks that belong to a video id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitleCollection {
     pub videoid: String,
@@ -78,6 +95,7 @@ pub struct SubtitleCollection {
     pub languages: Vec<SubtitleTrack>,
 }
 
+/// Comment stored on disk, mirroring what the frontend expects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentRecord {
     pub id: String,
@@ -98,12 +116,15 @@ pub struct CommentRecord {
     pub reply_count: Option<i64>,
 }
 
+/// Wrapper around the SQLite connection that performs read/write operations.
 #[derive(Debug)]
 pub struct MetadataStore {
     conn: Connection,
 }
 
 impl MetadataStore {
+    /// Opens (and if necessary creates) the SQLite DB and ensures the expected
+    /// schema exists. WAL mode is enabled to avoid readers blocking writers.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -123,6 +144,8 @@ impl MetadataStore {
         Ok(store)
     }
 
+    /// Runs the SQL required to create the tables if they do not already
+    /// exist. Wrapped in a transaction so a failure leaves the DB untouched.
     fn ensure_tables(&mut self) -> Result<()> {
         let tx = self.conn.transaction()?;
 
@@ -195,6 +218,7 @@ impl MetadataStore {
         Ok(())
     }
 
+    /// Inserts or updates a long-form video entry.
     pub fn upsert_video(&self, record: &VideoRecord) -> Result<()> {
         self.upsert("videos", record)
     }
@@ -203,6 +227,7 @@ impl MetadataStore {
         self.upsert("shorts", record)
     }
 
+    /// Shared helper used by both `videos` and `shorts` tables.
     fn upsert(&self, table: &str, record: &VideoRecord) -> Result<()> {
         let tags_json = serde_json::to_string(&record.tags).context("serializing tags")?;
         let thumbnails_json =
@@ -268,6 +293,7 @@ impl MetadataStore {
         Ok(())
     }
 
+    /// Stores subtitle metadata in the DB.
     pub fn upsert_subtitles(&self, subtitles: &SubtitleCollection) -> Result<()> {
         let languages_json =
             serde_json::to_string(&subtitles.languages).context("serializing subtitles")?;
@@ -285,6 +311,8 @@ impl MetadataStore {
         Ok(())
     }
 
+    /// Replaces every stored comment for `videoid` in one transaction so we do
+    /// not mix old and new comment trees.
     pub fn replace_comments(&mut self, videoid: &str, comments: &[CommentRecord]) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM comments WHERE videoid = ?1", params![videoid])?;
@@ -319,12 +347,15 @@ impl MetadataStore {
     }
 }
 
+/// Lightweight cloneable reader that opens short‑lived connections for each
+/// query. This avoids keeping a single connection open across threads/tasks.
 #[derive(Clone)]
 pub struct MetadataReader {
     db_path: PathBuf,
 }
 
 impl MetadataReader {
+    /// Creates a new reader that lazily opens the DB whenever a query runs.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             db_path: path.as_ref().to_path_buf(),
@@ -335,6 +366,8 @@ impl MetadataReader {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
+        // Open a dedicated connection per invocation so long running queries
+        // do not block unrelated threads.
         let conn = Connection::open(&self.db_path)
             .with_context(|| format!("opening metadata DB {}", self.db_path.display()))?;
         conn.pragma_update(None, "foreign_keys", &"ON")?;
@@ -490,6 +523,7 @@ impl MetadataReader {
     }
 }
 
+/// Converts a SQL row into a `VideoRecord`, deserializing the Vec/JSON fields.
 fn row_to_video_record(row: &Row<'_>) -> Result<VideoRecord> {
     let tags_json: String = row.get("tags_json")?;
     let thumbnails_json: String = row.get("thumbnails_json")?;
@@ -525,6 +559,8 @@ fn row_to_video_record(row: &Row<'_>) -> Result<VideoRecord> {
     })
 }
 
+/// Converts a SQL row into a `CommentRecord` while normalizing the boolean flag
+/// stored as an INTEGER in SQLite.
 fn row_to_comment(row: &Row<'_>) -> Result<CommentRecord> {
     Ok(CommentRecord {
         id: row.get("id")?,

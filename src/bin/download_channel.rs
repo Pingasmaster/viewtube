@@ -1,3 +1,10 @@
+//! Command-line helper that downloads whole YouTube channels and builds the
+//! on-disk cache that the ViewTube backend serves.
+//!
+//! The binary intentionally documents every moving piece: directory layout,
+//! yt-dlp invocations, and metadata normalization. This makes it trivial to
+//! tweak behaviour without re-reading the entire file.
+
 use anyhow::{Context, Result, bail};
 use chrono::{NaiveDate, Utc};
 use newtube_tools::metadata::{
@@ -23,6 +30,7 @@ const COOKIES_FILE: &str = "cookies.txt";
 const WWW_ROOT: &str = "/www/newtube.com";
 const METADATA_DB_FILE: &str = "metadata.db";
 
+/// Convenience wrapper around every filesystem location this binary touches.
 struct Paths {
     base: PathBuf,
     videos: PathBuf,
@@ -36,6 +44,7 @@ struct Paths {
     metadata_db: PathBuf,
 }
 
+/// Minimal version of yt-dlp's `info.json` just to extract available formats.
 #[derive(Deserialize)]
 struct InfoJson {
     #[serde(default)]
@@ -50,6 +59,8 @@ struct FormatEntry {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
+/// Full `yt-dlp --dump-single-json` payload. Only a subset of fields are read
+/// but everything is left optional because older videos may lack metadata.
 struct VideoInfo {
     id: String,
     title: Option<String>,
@@ -140,12 +151,16 @@ struct RawComment {
     time_text: Option<String>,
 }
 
+/// Distinguishes long-form uploads from Shorts so we can route files to the
+/// right directory and API slug.
 #[derive(Clone, Copy)]
 enum MediaKind {
     Video,
     Short,
 }
 
+/// CLI entry point. Validates prerequisites, prepares directories, and kicks
+/// off downloads for both standard uploads and Shorts.
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let channel_url = match args.next() {
@@ -222,6 +237,7 @@ fn main() -> Result<()> {
 }
 
 impl Paths {
+    /// Builds the struct using the global constants defined at the top.
     fn new() -> Self {
         let base = PathBuf::from(BASE_DIR);
         let videos = base.join(VIDEOS_SUBDIR);
@@ -248,6 +264,8 @@ impl Paths {
         }
     }
 
+    /// Creates every directory we might write to. This allows subsequent steps
+    /// to assume the filesystem exists.
     fn prepare(&self) -> Result<()> {
         fs::create_dir_all(&self.videos)
             .with_context(|| format!("creating {}", self.videos.display()))?;
@@ -265,6 +283,8 @@ impl Paths {
     }
 }
 
+/// Runs `<name> --version` to fail loudly when dependencies such as yt-dlp are
+/// missing.
 fn ensure_program_available(name: &str) -> Result<()> {
     let status = Command::new(name)
         .arg("--version")
@@ -279,6 +299,7 @@ fn ensure_program_available(name: &str) -> Result<()> {
     }
 }
 
+/// Parses yt-dlp's archive file to avoid duplicate downloads.
 fn load_archive(path: &Path) -> Result<HashSet<String>> {
     if !path.exists() {
         return Ok(HashSet::new());
@@ -300,6 +321,7 @@ fn load_archive(path: &Path) -> Result<HashSet<String>> {
     Ok(entries)
 }
 
+/// Mirrors yt-dlp's archive format by writing `youtube <id>` per line.
 fn append_to_archive(path: &Path, video_id: &str) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -311,6 +333,8 @@ fn append_to_archive(path: &Path, video_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Given a playlist (videos, Shorts, etc.), download each entry and refresh its
+/// metadata.
 fn download_collection(
     label: &str,
     list_url: String,
@@ -358,6 +382,8 @@ fn download_collection(
     Ok(())
 }
 
+/// Handles a single video/short: download media if missing, then refresh all
+/// metadata artifacts.
 fn process_media_entry(
     video_id: &str,
     current: usize,
@@ -368,6 +394,9 @@ fn process_media_entry(
     media_kind: MediaKind,
     metadata: &mut MetadataStore,
 ) -> Result<()> {
+    // Archive entries let us skip heavy downloads when the file tree already
+    // contains every muxed format. We still refresh metadata because stats can
+    // change over time.
     let already_downloaded = archive.contains(video_id);
     let video_url = format!("https://www.youtube.com/watch?v={video_id}");
 
@@ -401,6 +430,7 @@ fn process_media_entry(
     Ok(())
 }
 
+/// Fetches info JSON, updates DB rows, and syncs subtitles/comments.
 fn refresh_metadata(
     video_id: &str,
     video_url: &str,
@@ -426,6 +456,8 @@ fn refresh_metadata(
     Ok(())
 }
 
+/// Runs `yt-dlp --dump-single-json` and caches the response alongside the
+/// downloaded assets.
 fn fetch_video_info(
     video_id: &str,
     video_url: &str,
@@ -478,6 +510,8 @@ fn fetch_video_info(
     Ok(info)
 }
 
+/// Translates `VideoInfo` from yt-dlp into the structured `VideoRecord` that
+/// the backend expects.
 fn build_video_record(
     video_id: &str,
     info: &VideoInfo,
@@ -541,6 +575,8 @@ fn build_video_record(
     })
 }
 
+/// Gathers subtitle tracks saved locally, falling back to the remote URL when
+/// nothing has been downloaded yet.
 fn collect_subtitles(
     video_id: &str,
     info: &VideoInfo,
@@ -592,6 +628,8 @@ fn collect_subtitles(
     }
 
     if tracks.is_empty() {
+        // If nothing was saved locally we still return the first remote track so
+        // the frontend can show at least a single caption option.
         if let Some(remote) = first_remote_subtitle(info) {
             tracks.push(remote);
         }
@@ -603,6 +641,8 @@ fn collect_subtitles(
     })
 }
 
+/// Builds a mapping of language code -> display name using both manual and
+/// automatic subtitle entries.
 fn subtitle_name_map(info: &VideoInfo) -> HashMap<String, String> {
     let mut names = HashMap::new();
     if let Some(subs) = &info.subtitles {
@@ -628,6 +668,8 @@ fn subtitle_name_map(info: &VideoInfo) -> HashMap<String, String> {
     names
 }
 
+/// Helper that returns the first remote subtitle entry so the frontend can
+/// still offer captions even if local downloads failed.
 fn first_remote_subtitle(info: &VideoInfo) -> Option<SubtitleTrack> {
     let iter = info.subtitles.iter().chain(info.automatic_captions.iter());
 
@@ -653,6 +695,7 @@ fn first_remote_subtitle(info: &VideoInfo) -> Option<SubtitleTrack> {
     None
 }
 
+/// Returns a sorted list of thumbnail URLs served via the backend.
 fn collect_thumbnails(video_id: &str, paths: &Paths, slug: &str) -> Result<Vec<String>> {
     let thumb_dir = paths.thumbnails.join(video_id);
     if !thumb_dir.exists() {
@@ -681,6 +724,8 @@ fn collect_thumbnails(video_id: &str, paths: &Paths, slug: &str) -> Result<Vec<S
         .collect())
 }
 
+/// Builds the list of transcodings that exist on disk for a given video so the
+/// API can expose them as playable streams.
 fn collect_sources(
     video_id: &str,
     info: &VideoInfo,
@@ -700,6 +745,8 @@ fn collect_sources(
                 None => continue,
             };
 
+            // Skip pure audio or video-only streams because the frontend
+            // expects ready-to-play muxed files.
             if format
                 .vcodec
                 .as_deref()
@@ -747,6 +794,8 @@ fn collect_sources(
     Ok(sources)
 }
 
+/// Downloads every available comment via yt-dlp, writes them to disk, and then
+/// normalizes into `CommentRecord` rows while removing duplicates.
 fn fetch_comments(video_id: &str, video_url: &str, paths: &Paths) -> Result<Vec<CommentRecord>> {
     let comments_dir = paths.comments.join(video_id);
     fs::create_dir_all(&comments_dir)
@@ -759,8 +808,6 @@ fn fetch_comments(video_id: &str, video_url: &str, paths: &Paths) -> Result<Vec<
         .arg("--write-comments")
         .arg("--no-warnings")
         .arg("--no-progress")
-        .arg("--max-comments")
-        .arg("500")
         .arg("--force-overwrites")
         .arg("--output")
         .arg(output_pattern.to_string_lossy().to_string())
@@ -810,9 +857,13 @@ fn fetch_comments(video_id: &str, video_url: &str, paths: &Paths) -> Result<Vec<
     };
 
     let mut comments = Vec::new();
+    let mut seen_ids = HashSet::new();
     for value in comments_array {
         match serde_json::from_value::<RawComment>(value) {
             Ok(raw) => {
+                if !seen_ids.insert(raw.id.clone()) {
+                    continue;
+                }
                 let time_posted = raw
                     .timestamp
                     .and_then(timestamp_to_iso)
@@ -840,6 +891,8 @@ fn fetch_comments(video_id: &str, video_url: &str, paths: &Paths) -> Result<Vec<
     Ok(comments)
 }
 
+/// Creates a human-friendly label such as `1080p HDR` when the metadata is
+/// present.
 fn format_quality_label(height: Option<i64>, dynamic_range: Option<&str>) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(h) = height {
@@ -857,6 +910,7 @@ fn format_quality_label(height: Option<i64>, dynamic_range: Option<&str>) -> Opt
     }
 }
 
+/// Guesses the MIME type for each downloaded file based on its extension.
 fn mime_from_extension(ext: &str) -> String {
     match ext {
         "mp4" => "video/mp4".to_owned(),
@@ -866,6 +920,7 @@ fn mime_from_extension(ext: &str) -> String {
     }
 }
 
+/// Maps the enum to the slug portion used in API URLs and folder names.
 fn media_kind_slug(kind: MediaKind) -> &'static str {
     match kind {
         MediaKind::Video => "videos",
@@ -873,6 +928,7 @@ fn media_kind_slug(kind: MediaKind) -> &'static str {
     }
 }
 
+/// Converts yt-dlp's `YYYYMMDD` upload date format into ISO-8601.
 fn upload_date_to_iso(value: &str) -> Option<String> {
     if value.len() != 8 {
         return None;
@@ -885,10 +941,12 @@ fn upload_date_to_iso(value: &str) -> Option<String> {
     Some(format!("{}Z", naive.format("%Y-%m-%dT%H:%M:%S")))
 }
 
+/// Converts epoch seconds into an ISO-8601 string.
 fn timestamp_to_iso(timestamp: i64) -> Option<String> {
     chrono::DateTime::<Utc>::from_timestamp(timestamp, 0).map(|datetime| datetime.to_rfc3339())
 }
 
+/// Renders durations as `H:MM:SS` or `M:SS` for short clips.
 fn format_duration(duration: i64) -> String {
     let hours = duration / 3600;
     let minutes = (duration % 3600) / 60;
@@ -901,6 +959,8 @@ fn format_duration(duration: i64) -> String {
     }
 }
 
+/// Lists all video IDs in a playlist/channel, optionally applying a yt-dlp
+/// `--match-filter` (used to split Shorts vs. regular uploads).
 fn get_video_ids(list_url: &str, filter: Option<&str>) -> Result<Vec<String>> {
     let mut command = Command::new("yt-dlp");
     command
@@ -937,6 +997,8 @@ fn get_video_ids(list_url: &str, filter: Option<&str>) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Downloads every available muxed format for the provided video id, skipping
+/// streams we already grabbed.
 fn download_video_all_formats(video_id: &str, output_dir: &Path, paths: &Paths) -> Result<()> {
     let video_url = format!("https://www.youtube.com/watch?v={}", video_id);
     let video_dir = output_dir.join(video_id);
@@ -1003,6 +1065,7 @@ fn download_video_all_formats(video_id: &str, output_dir: &Path, paths: &Paths) 
     Ok(())
 }
 
+/// Wrapper for the metadata/description/thumbnail yt-dlp call.
 fn run_metadata_command(video_url: &str, output_pattern: &str, cookies: &Path) {
     let mut command = Command::new("yt-dlp");
     command
@@ -1023,6 +1086,7 @@ fn run_metadata_command(video_url: &str, output_pattern: &str, cookies: &Path) {
     run_silent(command, "metadata");
 }
 
+/// Downloads subtitles (manual+auto) into a per-video directory.
 fn run_subtitle_command(video_id: &str, video_url: &str, subtitles_dir: &Path, cookies: &Path) {
     let target_dir = subtitles_dir.join(video_id);
     if let Err(err) = fs::create_dir_all(&target_dir) {
@@ -1056,6 +1120,7 @@ fn run_subtitle_command(video_id: &str, video_url: &str, subtitles_dir: &Path, c
     run_silent(command, "subtitles");
 }
 
+/// Ensures we have the highest quality thumbnails for offline use.
 fn run_thumbnail_command(video_id: &str, video_url: &str, thumbnails_dir: &Path, cookies: &Path) {
     let target_dir = thumbnails_dir.join(video_id);
     if let Err(err) = fs::create_dir_all(&target_dir) {
@@ -1086,6 +1151,7 @@ fn run_thumbnail_command(video_id: &str, video_url: &str, thumbnails_dir: &Path,
     run_silent(command, "thumbnails");
 }
 
+/// Executes a command and only logs warnings, keeping stdout noise minimal.
 fn run_silent(mut command: Command, label: &str) {
     match command.status() {
         Ok(status) if status.success() => {}
@@ -1098,6 +1164,8 @@ fn run_silent(mut command: Command, label: &str) {
     }
 }
 
+/// Reads format IDs from the downloaded `.info.json`. If the file is missing or
+/// incomplete we fall back to invoking `yt-dlp -F`.
 fn collect_format_ids(info_json_path: &Path, video_url: &str) -> Result<Vec<String>> {
     let mut formats = BTreeSet::new();
 
@@ -1140,6 +1208,8 @@ fn collect_format_ids(info_json_path: &Path, video_url: &str) -> Result<Vec<Stri
                 video_url, output.status
             );
         } else {
+            // Parse the human-readable yt-dlp table by grabbing the first token
+            // on each non-empty line (skipping header rows like `format code`).
             let listing = String::from_utf8_lossy(&output.stdout);
             for line in listing.lines() {
                 let trimmed = line.trim();
@@ -1166,6 +1236,7 @@ fn collect_format_ids(info_json_path: &Path, video_url: &str) -> Result<Vec<Stri
     Ok(formats.into_iter().collect())
 }
 
+/// Normalizes yt-dlp format identifiers so they become safe filenames.
 fn sanitize_format_id(format_id: &str) -> String {
     format_id
         .chars()
