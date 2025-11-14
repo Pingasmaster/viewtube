@@ -172,10 +172,10 @@ fn set_download_channel_stub(path: PathBuf) {
 fn find_download_channel_executable() -> Result<PathBuf> {
     #[cfg(test)]
     {
-        if let Some(path) = DOWNLOAD_CHANNEL_STUB.lock().unwrap().clone() {
-            if path.exists() {
-                return Ok(path);
-            }
+        if let Some(path) = DOWNLOAD_CHANNEL_STUB.lock().unwrap().clone()
+            && path.exists()
+        {
+            return Ok(path);
         }
     }
 
