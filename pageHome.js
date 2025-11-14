@@ -547,7 +547,6 @@ class VideoGrid extends Component {
         return `${years} year${years === 1 ? '' : 's'} ago`;
     }
 }
-}
 
 // Main Content Component
 class MainContent extends Component {
@@ -718,4 +717,8 @@ class HomePage {
         
         console.log('Home page closed');
     }
+}
+
+if (typeof window !== 'undefined') {
+    window.HomePage = HomePage;
 }
