@@ -21,7 +21,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(test)]
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 const BASE_DIR: &str = "/yt";
 const VIDEOS_SUBDIR: &str = "videos";
@@ -36,6 +36,8 @@ const METADATA_DB_FILE: &str = "metadata.db";
 
 #[cfg(test)]
 static YT_DLP_STUB: Mutex<Option<PathBuf>> = Mutex::new(None);
+#[cfg(test)]
+static STUB_USE_LOCK: Mutex<()> = Mutex::new(());
 
 fn yt_dlp_command() -> Command {
     #[cfg(test)]
@@ -48,8 +50,26 @@ fn yt_dlp_command() -> Command {
 }
 
 #[cfg(test)]
-fn set_ytdlp_stub_path(path: PathBuf) {
-    *YT_DLP_STUB.lock().unwrap() = Some(path);
+fn set_ytdlp_stub_path(path: PathBuf) -> YtDlpStubGuard {
+    let guard = STUB_USE_LOCK.lock().unwrap();
+    {
+        let mut lock = YT_DLP_STUB.lock().unwrap();
+        *lock = Some(path);
+    }
+    YtDlpStubGuard { lock: Some(guard) }
+}
+
+#[cfg(test)]
+struct YtDlpStubGuard {
+    lock: Option<MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for YtDlpStubGuard {
+    fn drop(&mut self) {
+        *YT_DLP_STUB.lock().unwrap() = None;
+        self.lock.take();
+    }
 }
 
 /// Convenience wrapper around every filesystem location this binary touches.
@@ -1370,18 +1390,25 @@ mod tests {
     fn install_ytdlp_stub(dir: &Path) -> Result<PathBuf> {
         let script_path = dir.join("yt-dlp");
         let script = r#"#!/usr/bin/env bash
-set -euo pipefail
-prev=""
+set -eu
+args=("$@")
 output=""
-for arg in "$@"; do
-    if [[ "$prev" == "--output" ]]; then
-        output="$arg"
-    fi
-    prev="$arg"
+format_id=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      shift
+      output="$1"
+      ;;
+    --format)
+      shift
+      format_id="$1"
+      ;;
+  esac
+  shift
 done
-if [[ " $* " == *" --dump-single-json "* ]]; then
-cat <<'JSON'
-{
+
+json_payload='{
   "id": "alpha",
   "fulltitle": "Alpha Title",
   "description": "Sample description",
@@ -1408,11 +1435,58 @@ cat <<'JSON'
   ],
   "tags": ["tech"],
   "comment_count": 2
-}
-JSON
-exit 0
+}'
+
+format_listing='sb3 mhtml 48x27        1    |                  mhtml | images                                storyboard
+sb2 mhtml 80x45        1    |                  mhtml | images                                storyboard
+sb1 mhtml 160x90       1    |                  mhtml | images                                storyboard
+sb0 mhtml 320x180      1    |                  mhtml | images                                storyboard
+139 m4a   audio only      2 |    1.04MiB   49k https | audio only        mp4a.40.5   49k 22k [en] low, m4a_dash
+249 webm  audio only      2 |    1.15MiB   54k https | audio only        opus        54k 48k [en] low, webm_dash
+140 m4a   audio only      2 |    2.75MiB  130k https | audio only        mp4a.40.2  130k 44k [en] medium, m4a_dash
+251 webm  audio only      2 |    2.98MiB  140k https | audio only        opus       140k 48k [en] medium, webm_dash
+91  mp4   256x144     25    | ~  3.62MiB  171k m3u8  | avc1.4D400C       mp4a.40.5           [en]
+160 mp4   256x144     25    |    1.25MiB   59k https | avc1.4d400c   59k video only          144p, mp4_dash
+278 webm  256x144     25    |  465.49KiB   21k https | vp9           21k video only          144p, webm_dash
+92  mp4   426x240     25    | ~  6.85MiB  323k m3u8  | avc1.4D4015       mp4a.40.5           [en]
+133 mp4   426x240     25    |    3.12MiB  147k https | avc1.4d4015  147k video only          240p, mp4_dash
+242 webm  426x240     25    |  712.56KiB   33k https | vp9           33k video only          240p, webm_dash
+93  mp4   640x360     25    | ~  6.08MiB  287k m3u8  | avc1.4D401E       mp4a.40.2           [en]
+134 mp4   640x360     25    |    2.14MiB  101k https | avc1.4d401e  101k video only          360p, mp4_dash
+18  mp4   640x360     25  2 |    3.93MiB  185k https | avc1.42001E       mp4a.40.2       44k [en] 360p
+243 webm  640x360     25    |    1.53MiB   72k https | vp9           72k video only          360p, webm_dash
+94  mp4   854x480     25    | ~  9.84MiB  464k m3u8  | avc1.4D401E       mp4a.40.2           [en]
+135 mp4   854x480     25    |    4.60MiB  217k https | avc1.4d401e  217k video only          480p, mp4_dash
+244 webm  854x480     25    |    2.89MiB  136k https | vp9          136k video only          480p, webm_dash
+95  mp4   1280x720    25    | ~ 19.69MiB  928k m3u8  | avc1.4D401F       mp4a.40.2           [en]
+136 mp4   1280x720    25    |   11.17MiB  526k https | avc1.4d401f  526k video only          720p, mp4_dash
+247 webm  1280x720    25    |    8.27MiB  390k https | vp9          390k video only          720p, webm_dash
+96  mp4   1920x1080   25    | ~ 45.98MiB 2167k m3u8  | avc1.640028       mp4a.40.2           [en]
+137 mp4   1920x1080   25    |   29.26MiB 1379k https | avc1.640028 1379k video only          1080p, mp4_dash
+248 webm  1920x1080   25    |   15.79MiB  744k https | vp9          744k video only          1080p, webm_dash
+271 webm  2560x1440   25    |   51.65MiB 2434k https | vp9         2434k video only          1440p, webm_dash
+313 webm  3840x2160   25    |  147.52MiB 6950k https | vp9         6950k video only          2160p, webm_dash'
+
+if printf '%s\n' "${args[@]}" | grep -q -- '--flat-playlist'; then
+  echo "alpha"
+  exit 0
 fi
-if [[ " $* " == *" --write-comments "* ]]; then
+
+if printf '%s\n' "${args[@]}" | grep -q -- '--dump-single-json'; then
+  printf '%s\n' "$json_payload"
+  exit 0
+fi
+
+if printf '%s\n' "${args[@]}" | grep -q -- '--write-info-json'; then
+  mkdir -p "$(dirname "$output")"
+  printf '%s\n' "$json_payload" > "${output}.info.json"
+  echo "desc" > "${output}.description"
+  echo "thumb" > "${output}.jpg"
+  exit 0
+fi
+
+if printf '%s\n' "${args[@]}" | grep -q -- '--write-comments'; then
+  mkdir -p "$(dirname "$output")"
 cat <<'JSON' > "${output}.comments.json"
 [
   {"id":"c1","text":"first","timestamp":1700000000,"author_is_channel_owner":true,"like_count":1},
@@ -1420,8 +1494,33 @@ cat <<'JSON' > "${output}.comments.json"
   {"id":"c2","text":"second","time_text":"2024-01-01","author_is_uploader":true}
 ]
 JSON
-exit 0
+  exit 0
 fi
+
+if printf '%s\n' "${args[@]}" | grep -q -- '--write-sub'; then
+  mkdir -p "$(dirname "$output")"
+  echo "WEBVTT" > "${output}.en.vtt"
+  exit 0
+fi
+
+if printf '%s\n' "${args[@]}" | grep -q -- '--write-thumbnail'; then
+  mkdir -p "$(dirname "$output")"
+  echo "thumb" > "${output}.jpg"
+  exit 0
+fi
+
+if [[ -n "$format_id" ]]; then
+  target="${output//%(ext)s/mp4}"
+  mkdir -p "$(dirname "$target")"
+  echo "video" > "$target"
+  exit 0
+fi
+
+if printf '%s\n' "${args[@]}" | grep -q -- '^-F$'; then
+  printf '%s\n' "$format_listing"
+  exit 0
+fi
+
 exit 0
 "#;
         fs::write(&script_path, script)?;
@@ -1644,7 +1743,7 @@ exit 0
     fn process_entry_refreshes_metadata_even_when_archived() -> Result<()> {
         let (temp, paths) = temp_paths();
         let stub = install_ytdlp_stub(temp.path())?;
-        set_ytdlp_stub_path(stub);
+        let _guard = set_ytdlp_stub_path(stub);
         paths.prepare()?;
 
         let media_dir = paths.media_dir(MediaKind::Video).join("alpha");
@@ -1679,7 +1778,7 @@ exit 0
     fn fetch_comments_dedupes_and_sets_flags() -> Result<()> {
         let (temp, paths) = temp_paths();
         let stub = install_ytdlp_stub(temp.path())?;
-        set_ytdlp_stub_path(stub);
+        let _guard = set_ytdlp_stub_path(stub);
         let comments = fetch_comments("alpha", "https://youtube.com/watch?v=alpha", &paths)?;
         assert_eq!(comments.len(), 2);
         assert!(
@@ -1690,6 +1789,56 @@ exit 0
                 .starts_with("2023")
         );
         assert!(comments.iter().any(|c| c.status_likedbycreator));
+        Ok(())
+    }
+
+    #[test]
+    fn download_collection_downloads_new_entries() -> Result<()> {
+        let (temp, paths) = temp_paths();
+        let stub = install_ytdlp_stub(temp.path())?;
+        let _guard = set_ytdlp_stub_path(stub);
+        paths.prepare()?;
+        let mut metadata = MetadataStore::open(&paths.metadata_db)?;
+        let mut archive = HashSet::new();
+        download_collection(
+            "test videos",
+            "https://example.com/channel/videos".to_string(),
+            None,
+            &paths,
+            &mut archive,
+            MediaKind::Video,
+            &mut metadata,
+        )?;
+        let reader = MetadataReader::new(&paths.metadata_db)?;
+        assert!(reader.get_video("alpha")?.is_some());
+        let media_file = paths
+            .media_dir(MediaKind::Video)
+            .join("alpha")
+            .join("alpha_1080p.mp4");
+        assert!(media_file.exists());
+        Ok(())
+    }
+
+    fn expected_format_ids() -> Vec<String> {
+        vec![
+            "133", "134", "135", "136", "137", "139", "140", "160", "18", "242", "243", "244",
+            "247", "248", "249", "251", "271", "278", "313", "91", "92", "93", "94", "95", "96",
+            "sb0", "sb1", "sb2", "sb3",
+        ]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn collect_format_ids_matches_known_listing() -> Result<()> {
+        let (temp, _paths) = temp_paths();
+        let stub = install_ytdlp_stub(temp.path())?;
+        let _guard = set_ytdlp_stub_path(stub);
+        let info_path = temp.path().join("empty.json");
+        fs::write(&info_path, r#"{"formats":[]}"#)?;
+        let actual = collect_format_ids(&info_path, "https://www.youtube.com/watch?v=6QZz04e6gqE")?;
+        assert_eq!(actual, expected_format_ids());
         Ok(())
     }
 }
