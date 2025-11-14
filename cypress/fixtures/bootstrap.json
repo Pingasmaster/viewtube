@@ -1,0 +1,38 @@
+{
+  "videos": [
+    {
+      "videoid": "abc123",
+      "title": "Demo Video",
+      "description": "A QA bootstrap video",
+      "likes": 100,
+      "views": 4500,
+      "upload_date": "2024-05-01",
+      "author": "QA Channel",
+      "duration": 125,
+      "thumbnails": [
+        "https://placehold.co/600x400"
+      ]
+    }
+  ],
+  "shorts": [],
+  "subtitles": [
+    {
+      "videoid": "abc123",
+      "languages": [
+        {
+          "code": "en",
+          "name": "English",
+          "url": "https://example.com/en.vtt"
+        }
+      ]
+    }
+  ],
+  "comments": [
+    {
+      "id": "c1",
+      "videoid": "abc123",
+      "text": "Great video!",
+      "author": "Test User"
+    }
+  ]
+}

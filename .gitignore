@@ -4,3 +4,6 @@
 backend
 download_channel
 routine_update
+node_modules/
+cypress/screenshots/
+cypress/videos/

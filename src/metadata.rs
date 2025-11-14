@@ -1,9 +1,7 @@
-//! Metadata persistence layer for ViewTube.
+//! Metadata persistence layer for ViewTube. Mainly used for backend tests.
 //!
 //! All structs in this module mirror how metadata is serialized to disk and
-//! exposed to the API. The comments intentionally lean verbose so that anyone
-//! extending the tooling knows exactly why each piece exists and how the SQLite
-//! layout hangs together.
+//! exposed to the API.
 
 use std::path::{Path, PathBuf};
 
@@ -575,4 +573,213 @@ fn row_to_comment(row: &Row<'_>) -> Result<CommentRecord> {
             .map(|value| value != 0)?,
         reply_count: row.get("reply_count")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    /// Utility builder so every test can generate a fully populated video row
+    /// without repeating dozens of assignments. Individual tests tweak the
+    /// resulting struct when they need to exercise specific fields.
+    fn sample_video(id: &str) -> VideoRecord {
+        VideoRecord {
+            videoid: id.to_owned(),
+            title: format!("Video {id}"),
+            description: "desc".into(),
+            likes: Some(1),
+            dislikes: Some(0),
+            views: Some(42),
+            upload_date: Some("2024-01-01".into()),
+            author: Some("Author".into()),
+            subscriber_count: Some(1000),
+            duration: Some(120),
+            duration_text: Some("2:00".into()),
+            channel_url: Some("https://example.com".into()),
+            thumbnail_url: Some("thumb.jpg".into()),
+            tags: vec!["tech".into()],
+            thumbnails: vec!["thumb.jpg".into()],
+            extras: serde_json::json!({"kind": "demo"}),
+            sources: vec![VideoSource {
+                format_id: "1080p".into(),
+                quality_label: Some("1080p".into()),
+                width: Some(1920),
+                height: Some(1080),
+                fps: Some(30.0),
+                mime_type: Some("video/mp4".into()),
+                ext: Some("mp4".into()),
+                file_size: Some(1_000_000),
+                url: "https://cdn.example/video.mp4".into(),
+                path: Some("/videos/video.mp4".into()),
+            }],
+        }
+    }
+
+    /// Opens a brand‑new temporary SQLite store and returns both the writable
+    /// `MetadataStore` and read-only `MetadataReader`. Using a temp directory
+    /// keeps tests isolated and mirrors how the binaries interact with the DB.
+    fn create_store() -> Result<(tempfile::TempDir, MetadataStore, MetadataReader, PathBuf)> {
+        let dir = tempdir()?;
+        let path = dir.path().join("metadata/test.db");
+        let store = MetadataStore::open(&path)?;
+        let reader = MetadataReader::new(&path)?;
+        Ok((dir, store, reader, path))
+    }
+
+    /// Validates that opening a store creates the DB file, turns on WAL mode and
+    /// provisions every expected table/index. This guards against regressions in
+    /// the bootstrap SQL.
+    #[test]
+    fn opens_store_and_creates_schema() -> Result<()> {
+        let (_temp, _store, _reader, path) = create_store()?;
+        assert!(path.exists(), "database file should be created");
+
+        let conn = Connection::open(&path)?;
+        let journal: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(journal.to_lowercase(), "wal");
+
+        for table in ["videos", "shorts", "subtitles", "comments"] {
+            let exists: Option<String> = conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            assert_eq!(exists.as_deref(), Some(table));
+        }
+        Ok(())
+    }
+
+    /// Covers the insert/update path for long-form videos, ensuring JSON fields
+    /// survive a round trip and updates override previous values as intended.
+    #[test]
+    fn upsert_video_roundtrip() -> Result<()> {
+        let (_temp, store, reader, _path) = create_store()?;
+
+        let mut record = sample_video("alpha");
+        // First insertion should persist all provided metadata as-is.
+        store.upsert_video(&record)?;
+
+        let fetched = reader.get_video("alpha")?.expect("video fetched");
+        assert_eq!(fetched.title, record.title);
+        assert_eq!(fetched.tags, record.tags);
+        assert_eq!(fetched.sources[0].format_id, "1080p");
+
+        // Update a couple of fields and verify that ON CONFLICT rewrites them.
+        record.title = "Updated".into();
+        record.tags.push("review".into());
+        store.upsert_video(&record)?;
+        let updated = reader.get_video("alpha")?.expect("video fetched after update");
+        assert_eq!(updated.title, "Updated");
+        assert!(updated.tags.contains(&"review".into()));
+        Ok(())
+    }
+
+    /// Mirrors the previous test but against the `shorts` table to guarantee
+    /// feature parity between both content types.
+    #[test]
+    fn upsert_short_roundtrip() -> Result<()> {
+        let (_temp, store, reader, _path) = create_store()?;
+
+        let record = sample_video("shorty");
+        // Short content uses the dedicated table but otherwise mirrors videos.
+        store.upsert_short(&record)?;
+
+        let shorts = reader.list_shorts()?;
+        assert_eq!(shorts.len(), 1);
+        assert_eq!(shorts[0].videoid, "shorty");
+        Ok(())
+    }
+
+    /// Ensures subtitle collections get serialized to JSON and can be retrieved
+    /// verbatim by the reader API.
+    #[test]
+    fn upsert_and_list_subtitles() -> Result<()> {
+        let (_temp, store, reader, _path) = create_store()?;
+        store.upsert_video(&sample_video("vid"))?;
+
+        let subtitles = SubtitleCollection {
+            videoid: "vid".into(),
+            languages: vec![SubtitleTrack {
+                code: "en".into(),
+                name: "English".into(),
+                url: "https://cdn/subs.vtt".into(),
+                path: Some("/subs/en.vtt".into()),
+            }],
+        };
+        // Writing a collection should replace any prior row for the video.
+        store.upsert_subtitles(&subtitles)?;
+
+        let listed = reader.list_subtitles()?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].languages[0].code, "en");
+        Ok(())
+    }
+
+    /// Exercises the transactional comment replacement flow so we never keep
+    /// stale comment trees after a new download cycle.
+    #[test]
+    fn replace_comments_resets_previous_entries() -> Result<()> {
+        let (_temp, mut store, reader, _path) = create_store()?;
+        store.upsert_video(&sample_video("vid"))?;
+
+        let first = vec![CommentRecord {
+            id: "1".into(),
+            videoid: "vid".into(),
+            author: "a".into(),
+            text: "hello".into(),
+            likes: Some(1),
+            time_posted: Some("2024-01-01".into()),
+            parent_comment_id: None,
+            status_likedbycreator: true,
+            reply_count: Some(0),
+        }];
+        // Seed the DB with a first batch of comments.
+        store.replace_comments("vid", &first)?;
+
+        let second = vec![CommentRecord {
+            id: "2".into(),
+            videoid: "vid".into(),
+            author: "b".into(),
+            text: "world".into(),
+            likes: Some(2),
+            time_posted: Some("2024-01-02".into()),
+            parent_comment_id: None,
+            status_likedbycreator: false,
+            reply_count: Some(1),
+        }];
+        // Second replacement should wipe the previous entries before inserting.
+        store.replace_comments("vid", &second)?;
+
+        let fetched = reader.get_comments("vid")?;
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].id, "2");
+        assert!(!fetched[0].status_likedbycreator);
+        Ok(())
+    }
+
+    /// Verifies that listing videos applies the desired ordering (newest first)
+    /// even when dates differ, which is critical for deterministic feeds.
+    #[test]
+    fn list_videos_returns_sorted_records() -> Result<()> {
+        let (_temp, store, reader, _path) = create_store()?;
+
+        let mut old = sample_video("old");
+        old.upload_date = Some("2023-01-01".into());
+        store.upsert_video(&old)?;
+
+        let mut new = sample_video("new");
+        new.upload_date = Some("2024-05-01".into());
+        store.upsert_video(&new)?;
+
+        let videos = reader.list_videos()?;
+        assert_eq!(videos.len(), 2);
+        assert_eq!(videos[0].videoid, "new");
+        assert_eq!(videos[1].videoid, "old");
+        Ok(())
+    }
 }

@@ -1,4 +1,5 @@
 # Viewtube
+
 A youtube frontend clone, entirely written from the gound up in HTMlL, CSS and javascript to be extra extra fast and almost pixel-perfect with the Youtube UI. Only exceptions are bad UI/UX decisions like the very recent icons and mobile-oriented style. The backend is fully written in safe rust and some bash scripts in order to clone entire youtube channels. When a video from them is first asked by a client, the 
 
 There is no account system, but history and likes/dislikes still work. You can save your cookies via an ID which contains your likes/dislikes/playlists/history and is unique to you so you can erase your cookies and still have the same experience on all your devices. There is also no ad. It also is not in violation of youtube copyright as all icons are taken from material UI and open-licensed, and it does NOT serve videos from youtube directly or indirectly, therefore there is no violation of youtube's TOS as this makes NO calls to youtube.com or any google-owned subdomains.
@@ -15,6 +16,7 @@ cp target/release/backend target/release/download_channel target/release/routine
 ```
 
 Make sure the downloader has created the directory layout expected by the server:
+
  - Videos + muxed formats live under `/yt/videos/<video_id>/`.
  - Shorts live under `/yt/shorts/<video_id>/`.
  - Thumbnails and subtitles live under `/yt/thumbnails/<video_id>/` and `/yt/subtitles/<video_id>/` respectively.
@@ -33,6 +35,7 @@ CTRL+A and CTRL+D to exit.
 ## Bakend implementation details
 
 ### `backend`
+
 - Purpose: lightweight Axum HTTP server that exposes `/api/*` routes consumed by the web UI.
 - Inputs: reads metadata from `/www/newtube.com/metadata.db` and streams files out of `/yt` (videos, shorts, subtitles, thumbnails).
 - Caching: keeps a read-through cache in memory so hot feeds do not hammer SQLite; restart the process to clear the cache.
@@ -43,6 +46,7 @@ CTRL+A and CTRL+D to exit.
   ```
 
 ### `download_channel`
+
 - Purpose: clones an entire YouTube channel (all versions of each video or Shorts + thumbnail + metadata + subtitles + comments) into the local library and keeps the SQLite database fresh.
 - Dependencies: `yt-dlp` must be on the `PATH`, plus optional `cookies.txt` in `/yt` when you need to access members-only/private feeds.
 - Behaviour:
@@ -57,6 +61,7 @@ CTRL+A and CTRL+D to exit.
   The program prints progress for each video, clearly separating long-form uploads and Shorts.
 
 ### `routine_update`
+
 - Purpose: cron-friendly helper that re-runs `download_channel` for every channel already present under `/yt`.
 - Behaviour:
   - Walks `/yt/videos/**` and `/yt/shorts/**` looking for `<video_id>.info.json` files.
@@ -69,3 +74,13 @@ CTRL+A and CTRL+D to exit.
   Combine it with a scheduler (cron/systemd timers) to keep your library synced overnight without manual intervention.
 
 All three utilities share the same Rust crate (`newtube_tools`), so adding new metadata fields only requires updating the structs once.
+
+# Tests
+
+Before runing any tests, you need to run `npm install` to install modules.
+
+`cargo test` covers the Rust backend (module `metadata.rs`)
+
+`npm run test` : launches Jest with `fake-indexeddb`, `jsdom` and validates front helpers with et valide les helpers front (normalisation vidéo, opérations IndexedDB, API client, stockage user). Les fichiers concernés se trouvent dans `tests/js/*.test.js`
+
+`npm run test:e2e` launches Cypress on port 4173 and runs `cypress/e2e/home.cy.js` who verifies the proper render of the Home video grid and sidebar switch between versions (normal / minimal/ none) according to desktop/tablet/mobile rules from `cypress/fixtures/bootstrap.json`

@@ -727,38 +727,43 @@ class App {
     }
 }
 
-// Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    const app = new App();
-    app.init();
-    
-    // Register service worker with better error handling
-    if ('serviceWorker' in navigator) {
-        // Check if we're on a secure context (HTTPS or localhost)
-        if (window.isSecureContext) {
-            navigator.serviceWorker.register('/sw.js')
-                .then((registration) => {
-                    console.log('✅ Service Worker registered successfully:', registration.scope);
-                })
-                .catch((error) => {
-                    // Handle different error types
-                    if (error.name === 'NotSupportedError') {
-                        console.warn('⚠️ Service Worker not supported or blocked by browser settings');
-                        console.warn('💡 This may be due to:');
-                        console.warn('   - Browser privacy settings blocking Service Workers');
-                        console.warn('   - Incognito/Private browsing mode');
-                        console.warn('   - Non-standard port restrictions');
-                        console.warn('   - The app will work, but without offline caching');
-                    } else if (error.name === 'SecurityError') {
-                        console.warn('⚠️ Service Worker blocked due to security policy');
-                    } else {
-                        console.error('❌ Service Worker registration failed:', error);
-                    }
-                });
+if (typeof document !== 'undefined' && typeof window !== 'undefined' && !window.__VIEWTUBE_TEST__) {
+    document.addEventListener('DOMContentLoaded', () => {
+        const app = new App();
+        app.init();
+        
+        // Register service worker with better error handling
+        if ('serviceWorker' in navigator) {
+            // Check if we're on a secure context (HTTPS or localhost)
+            if (window.isSecureContext) {
+                navigator.serviceWorker.register('/sw.js')
+                    .then((registration) => {
+                        console.log('✅ Service Worker registered successfully:', registration.scope);
+                    })
+                    .catch((error) => {
+                        // Handle different error types
+                        if (error.name === 'NotSupportedError') {
+                            console.warn('⚠️ Service Worker not supported or blocked by browser settings');
+                            console.warn('💡 This may be due to:');
+                            console.warn('   - Browser privacy settings blocking Service Workers');
+                            console.warn('   - Incognito/Private browsing mode');
+                            console.warn('   - Non-standard port restrictions');
+                            console.warn('   - The app will work, but without offline caching');
+                        } else if (error.name === 'SecurityError') {
+                            console.warn('⚠️ Service Worker blocked due to security policy');
+                        } else {
+                            console.error('❌ Service Worker registration failed:', error);
+                        }
+                    });
+            } else {
+                console.warn('⚠️ Service Workers require a secure context (HTTPS)');
+            }
         } else {
-            console.warn('⚠️ Service Workers require a secure context (HTTPS)');
+            console.warn('⚠️ Service Workers not supported in this browser');
         }
-    } else {
-        console.warn('⚠️ Service Workers not supported in this browser');
-    }
-});
+    });
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { DatabaseManager, ApiClient, App };
+}

@@ -266,5 +266,11 @@ class UserDataStore {
 
 if (typeof window !== 'undefined') {
     window.UserDataStore = UserDataStore;
-    window.userDataStore = new UserDataStore();
+    if (!window.__VIEWTUBE_TEST__) {
+        window.userDataStore = new UserDataStore();
+    }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = UserDataStore;
 }
