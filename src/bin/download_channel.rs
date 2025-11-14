@@ -317,7 +317,9 @@ fn load_archive(path: &Path) -> Result<HashSet<String>> {
 
     for line in reader.lines() {
         let line = line?;
-        if let Some(id) = line.split_whitespace().last() && !id.is_empty() {
+        if let Some(id) = line.split_whitespace().last()
+            && !id.is_empty()
+        {
             entries.insert(id.to_owned());
         }
     }
@@ -650,14 +652,18 @@ fn subtitle_name_map(info: &VideoInfo) -> HashMap<String, String> {
     let mut names = HashMap::new();
     if let Some(subs) = &info.subtitles {
         for (code, entries) in subs {
-            if let Some(entry) = entries.first() && let Some(name) = &entry.name {
+            if let Some(entry) = entries.first()
+                && let Some(name) = &entry.name
+            {
                 names.insert(code.to_owned(), name.to_owned());
             }
         }
     }
     if let Some(auto) = &info.automatic_captions {
         for (code, entries) in auto {
-            if let Some(entry) = entries.first() && let Some(name) = &entry.name {
+            if let Some(entry) = entries.first()
+                && let Some(name) = &entry.name
+            {
                 names
                     .entry(code.to_owned())
                     .or_insert_with(|| name.to_owned());
@@ -674,7 +680,9 @@ fn first_remote_subtitle(info: &VideoInfo) -> Option<SubtitleTrack> {
 
     for map in iter {
         for (code, entries) in map {
-            if let Some(entry) = entries.first() && let Some(url) = &entry.url {
+            if let Some(entry) = entries.first()
+                && let Some(url) = &entry.url
+            {
                 let name = entry
                     .name
                     .clone()
@@ -895,7 +903,9 @@ fn format_quality_label(height: Option<i64>, dynamic_range: Option<&str>) -> Opt
     if let Some(h) = height {
         parts.push(format!("{h}p"));
     }
-    if let Some(range) = dynamic_range && !range.is_empty() {
+    if let Some(range) = dynamic_range
+        && !range.is_empty()
+    {
         parts.push(range.to_owned());
     }
     if parts.is_empty() {
@@ -1164,7 +1174,9 @@ fn run_silent(mut command: Command, label: &str) {
 fn collect_format_ids(info_json_path: &Path, video_url: &str) -> Result<Vec<String>> {
     let mut formats = BTreeSet::new();
 
-    if info_json_path.exists() && let Ok(file) = File::open(info_json_path) {
+    if info_json_path.exists()
+        && let Ok(file) = File::open(info_json_path)
+    {
         let reader = BufReader::new(file);
         match serde_json::from_reader::<_, InfoJson>(reader) {
             Ok(info) => {
