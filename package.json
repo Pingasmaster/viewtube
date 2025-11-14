@@ -6,6 +6,7 @@
   "scripts": {
     "test": "jest",
     "test:unit": "jest",
+    "test:coverage": "jest --coverage --coverageDirectory=coverage/jest",
     "test:e2e": "cypress run --e2e --browser electron --headless"
   },
   "repository": {

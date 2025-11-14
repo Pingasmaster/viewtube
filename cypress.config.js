@@ -9,8 +9,37 @@ let server;
 /**
  * Creates a minimal static file server so Cypress can hit the SPA without
  * needing `npm run dev` or another external process. The server simply serves
- * files relative to the repo root and infers content types from extensions.
+ * files relative to the repo root and infers content types from extensions
  */
+function serveFile(res, absolutePath, fallbackHandled = false) {
+  fs.readFile(absolutePath, (err, data) => {
+    if (err) {
+      if (!fallbackHandled) {
+        // SPA fallback: serve index.html for unknown routes like /watch or /shorts.
+        const indexPath = path.join(__dirname, 'index.html');
+        serveFile(res, indexPath, true);
+        return;
+      }
+      res.statusCode = 404;
+      res.end('Not found');
+      return;
+    }
+
+    const ext = path.extname(absolutePath);
+    const contentType = {
+      '.html': 'text/html',
+      '.js': 'text/javascript',
+      '.css': 'text/css',
+      '.json': 'application/json',
+      '.svg': 'image/svg+xml',
+      '.ttf': 'font/ttf'
+    }[ext] || 'application/octet-stream';
+
+    res.setHeader('Content-Type', contentType);
+    res.end(data);
+  });
+}
+
 function createStaticServer() {
   const root = __dirname;
   return http.createServer((req, res) => {
@@ -24,30 +53,11 @@ function createStaticServer() {
     const safePath = normalized.replace(/^\.\.(?:[\\/]|$)/, '');
     const absolutePath = path.join(root, safePath);
 
-    fs.readFile(absolutePath, (err, data) => {
-      if (err) {
-        res.statusCode = 404;
-        res.end('Not found');
-        return;
-      }
-
-      const ext = path.extname(absolutePath);
-      const contentType = {
-        '.html': 'text/html',
-        '.js': 'text/javascript',
-        '.css': 'text/css',
-        '.json': 'application/json',
-        '.svg': 'image/svg+xml',
-        '.ttf': 'font/ttf'
-      }[ext] || 'application/octet-stream';
-
-      res.setHeader('Content-Type', contentType);
-      res.end(data);
-    });
+    serveFile(res, absolutePath);
   });
 }
 
-/** Ensure the static server is running before Cypress starts executing specs. */
+/** Ensure the static server is running before Cypress starts executing specs */
 function ensureServer() {
   if (!server) {
     server = createStaticServer();

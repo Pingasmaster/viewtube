@@ -1,0 +1,36 @@
+{
+  "videoid": "abc123",
+  "title": "Demo Video",
+  "description": "A QA bootstrap video",
+  "likes": 100,
+  "dislikes": 2,
+  "views": 4500,
+  "upload_date": "2024-05-01",
+  "author": "QA Channel",
+  "subscriberCount": 123456,
+  "duration": 125,
+  "channel_url": "https://example.com/channel/qa",
+  "thumbnails": [
+    "https://placehold.co/600x400"
+  ],
+  "sources": [
+    {
+      "format_id": "1080p",
+      "quality_label": "1080p",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "mime_type": "video/mp4",
+      "url": "https://cdn.example.com/video1080.mp4"
+    },
+    {
+      "format_id": "720p",
+      "quality_label": "720p",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "mime_type": "video/mp4",
+      "url": "https://cdn.example.com/video720.mp4"
+    }
+  ]
+}

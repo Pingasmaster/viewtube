@@ -1,0 +1,16 @@
+[
+  {
+    "id": "c1",
+    "videoid": "abc123",
+    "text": "Great video!",
+    "author": "Test User",
+    "time_posted": "2024-05-02"
+  },
+  {
+    "id": "c2",
+    "videoid": "abc123",
+    "text": "Second comment",
+    "author": "Another User",
+    "time_posted": "2024-05-03"
+  }
+]

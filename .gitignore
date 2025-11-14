@@ -7,3 +7,4 @@ routine_update
 node_modules/
 cypress/screenshots/
 cypress/videos/
+coverage/

@@ -618,6 +618,22 @@ mod tests {
         }
     }
 
+    /// Helper that produces deterministic comment rows; individual tests can
+    /// tweak author/text/timestamps without redefining the entire struct.
+    fn sample_comment(id: &str, videoid: &str) -> CommentRecord {
+        CommentRecord {
+            id: id.into(),
+            videoid: videoid.into(),
+            author: format!("author-{id}"),
+            text: format!("text-{id}"),
+            likes: Some(0),
+            time_posted: Some("2024-01-01T00:00:00Z".into()),
+            parent_comment_id: None,
+            status_likedbycreator: false,
+            reply_count: Some(0),
+        }
+    }
+
     /// Opens a brand‑new temporary SQLite store and returns both the writable
     /// `MetadataStore` and read-only `MetadataReader`. Using a temp directory
     /// keeps tests isolated and mirrors how the binaries interact with the DB.
@@ -780,6 +796,115 @@ mod tests {
         assert_eq!(videos.len(), 2);
         assert_eq!(videos[0].videoid, "new");
         assert_eq!(videos[1].videoid, "old");
+        Ok(())
+    }
+
+    /// Reader helpers should gracefully return `None` when a record is missing.
+    #[test]
+    fn reader_returns_none_for_missing_entries() -> Result<()> {
+        let (_temp, _store, reader, _path) = create_store()?;
+        assert!(reader.get_video("ghost")?.is_none());
+        assert!(reader.get_short("ghost")?.is_none());
+        assert!(reader.get_subtitles("ghost")?.is_none());
+        Ok(())
+    }
+
+    /// Listing shorts mirrors videos but must respect upload_date ordering.
+    #[test]
+    fn list_shorts_sorted_by_upload_date() -> Result<()> {
+        let (_temp, store, reader, _path) = create_store()?;
+        let mut older = sample_video("short-old");
+        older.upload_date = Some("2023-05-01".into());
+        store.upsert_short(&older)?;
+
+        let mut newer = sample_video("short-new");
+        newer.upload_date = Some("2024-06-01".into());
+        store.upsert_short(&newer)?;
+
+        let shorts = reader.list_shorts()?;
+        assert_eq!(shorts.len(), 2);
+        assert_eq!(shorts[0].videoid, "short-new");
+        assert_eq!(shorts[1].videoid, "short-old");
+        Ok(())
+    }
+
+    /// Subtitle upserts should overwrite existing rows rather than append.
+    #[test]
+    fn upsert_subtitles_overwrites_existing_languages() -> Result<()> {
+        let (_temp, store, reader, _path) = create_store()?;
+        store.upsert_video(&sample_video("vid-sub"))?;
+
+        let initial = SubtitleCollection {
+            videoid: "vid-sub".into(),
+            languages: vec![SubtitleTrack {
+                code: "en".into(),
+                name: "English".into(),
+                url: "https://cdn/en.vtt".into(),
+                path: None,
+            }],
+        };
+        store.upsert_subtitles(&initial)?;
+
+        let updated = SubtitleCollection {
+            videoid: "vid-sub".into(),
+            languages: vec![SubtitleTrack {
+                code: "fr".into(),
+                name: "Français".into(),
+                url: "https://cdn/fr.vtt".into(),
+                path: Some("/subs/fr.vtt".into()),
+            }],
+        };
+        store.upsert_subtitles(&updated)?;
+
+        let fetched = reader.get_subtitles("vid-sub")?.expect("subtitles exist");
+        assert_eq!(fetched.languages.len(), 1);
+        assert_eq!(fetched.languages[0].code, "fr");
+        Ok(())
+    }
+
+    /// Comments containing replies and flags should persist verbatim.
+    #[test]
+    fn replace_comments_preserves_replies_and_flags() -> Result<()> {
+        let (_temp, mut store, reader, _path) = create_store()?;
+        store.upsert_video(&sample_video("with-comments"))?;
+
+        let mut parent = sample_comment("parent", "with-comments");
+        parent.status_likedbycreator = true;
+        let mut reply = sample_comment("child", "with-comments");
+        reply.parent_comment_id = Some("parent".into());
+
+        store.replace_comments("with-comments", &[parent.clone(), reply.clone()])?;
+
+        let comments = reader.get_comments("with-comments")?;
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, "parent");
+        assert!(comments[0].status_likedbycreator);
+        assert_eq!(comments[1].parent_comment_id.as_deref(), Some("parent"));
+        Ok(())
+    }
+
+    /// list_all_comments should merge comments across videos ordered by timestamp.
+    #[test]
+    fn list_all_comments_orders_by_time() -> Result<()> {
+        let (_temp, mut store, reader, _path) = create_store()?;
+        store.upsert_video(&sample_video("video-one"))?;
+        store.upsert_video(&sample_video("video-two"))?;
+
+        let mut first = sample_comment("1", "video-one");
+        first.time_posted = Some("2024-01-01T00:00:00Z".into());
+        let mut second = sample_comment("2", "video-two");
+        second.time_posted = Some("2024-01-01T00:05:00Z".into());
+        let mut third = sample_comment("3", "video-one");
+        third.time_posted = Some("2024-01-01T00:10:00Z".into());
+
+        store.replace_comments("video-one", &[first.clone(), third.clone()])?;
+        store.replace_comments("video-two", &[second.clone()])?;
+
+        let all = reader.list_all_comments()?;
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].id, "1");
+        assert_eq!(all[1].id, "2");
+        assert_eq!(all[2].id, "3");
         Ok(())
     }
 }
