@@ -266,8 +266,11 @@ fn find_download_channel_executable() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs::{self, File}, path::PathBuf};
     use std::io::Write;
+    use std::{
+        fs::{self, File},
+        path::PathBuf,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -279,13 +282,9 @@ mod tests {
 
     #[test]
     fn routine_args_override_paths() {
-        let args = RoutineArgs::from_slice(&[
-            "--media-root",
-            "/data/yt",
-            "--www-root",
-            "/srv/site",
-        ])
-        .unwrap();
+        let args =
+            RoutineArgs::from_slice(&["--media-root", "/data/yt", "--www-root", "/srv/site"])
+                .unwrap();
 
         assert_eq!(args.media_root, PathBuf::from("/data/yt"));
         assert_eq!(args.www_root, PathBuf::from("/srv/site"));

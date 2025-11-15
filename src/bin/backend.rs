@@ -247,8 +247,7 @@ async fn main() -> Result<()> {
         .unwrap_or(DEFAULT_PORT);
 
     let metadata_path = media_root.join(METADATA_DB_FILE);
-    let reader =
-        MetadataReader::new(&metadata_path).context("initializing metadata reader")?;
+    let reader = MetadataReader::new(&metadata_path).context("initializing metadata reader")?;
 
     let state = AppState {
         reader: Arc::new(reader),

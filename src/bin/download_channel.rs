@@ -1392,9 +1392,9 @@ mod tests {
     use anyhow::Result;
     use newtube_tools::metadata::MetadataReader;
     use std::collections::{HashMap, HashSet};
-    use std::{fs, path::PathBuf};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::{fs, path::PathBuf};
     use tempfile::tempdir;
 
     fn temp_paths() -> (tempfile::TempDir, Paths) {
@@ -1405,8 +1405,7 @@ mod tests {
 
     #[test]
     fn downloader_args_use_defaults() {
-        let args =
-            DownloaderArgs::from_slice(&["https://www.youtube.com/@Channel"]).unwrap();
+        let args = DownloaderArgs::from_slice(&["https://www.youtube.com/@Channel"]).unwrap();
         assert_eq!(args.channel_url, "https://www.youtube.com/@Channel");
         assert_eq!(args.media_root, PathBuf::from(DEFAULT_MEDIA_ROOT));
         assert_eq!(args.www_root, PathBuf::from(DEFAULT_WWW_ROOT));

@@ -1,30 +1,53 @@
-#!/bin/sh
-# Check for root
+#!/usr/bin/env bash
+set -euo pipefail
+
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root." >&2
     exit 1
 fi
-tee /yt/viewtube-update-build-run.sh <<'EOF'
+
+CONFIG_FILE="/etc/viewtube-env"
+MEDIA_ROOT="${MEDIA_ROOT:-/yt}"
+WWW_ROOT="${WWW_ROOT:-/www/newtube.com}"
+APP_VERSION="${APP_VERSION:-0.1.0}"
+HELPER_SCRIPT="$MEDIA_ROOT/viewtube-update-build-run.sh"
+
+mkdir -p "$MEDIA_ROOT" "$WWW_ROOT"
+
+cat <<EOF > "$CONFIG_FILE"
+MEDIA_ROOT="$MEDIA_ROOT"
+WWW_ROOT="$WWW_ROOT"
+APP_VERSION="$APP_VERSION"
+EOF
+
+cat <<'SCRIPT' > "$HELPER_SCRIPT"
 #!/usr/bin/env bash
 set -euo pipefail
 
-CURRENT_APP_VERSION="0.1.0"
+CONFIG_FILE="/etc/viewtube-env"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/etc/viewtube-env
+    . "$CONFIG_FILE"
+else
+    echo "Missing $CONFIG_FILE; cannot continue." >&2
+    exit 1
+fi
+
 REPO_URL="https://github.com/Pingasmaster/viewtube.git"
-APP_DIR="/www/newtube.com/"
 SCREEN_NAME_ROUTINEUPDATE="routineupdate"
 SCREEN_NAME_BACKEND="backend"
 NGINX_SERVICE="nginx"
 
-# Make sure PATH knows about cargo (adjust user/path if needed)
 export PATH="$PATH:/root/.cargo/bin:/usr/local/bin"
 
-# Clone or update the repo
+APP_DIR="$WWW_ROOT"
+
 echo "[*] Cloning repo..."
 rm -rf "$APP_DIR"
 git clone "$REPO_URL" "$APP_DIR"
 
-cd / && cd "$APP_DIR"
-# Remove uneeded files
+cd "$APP_DIR"
 ./cleanup-repo.sh
 CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
 if [[ "$APP_VERSION" != "$CARGO_VERSION" ]]; then
@@ -32,11 +55,11 @@ if [[ "$APP_VERSION" != "$CARGO_VERSION" ]]; then
     ./setup-software.sh
     exit 0
 fi
-rm -f cleanup-repo.sh setup-software.sh 
+rm -f cleanup-repo.sh setup-software.sh
 
 echo "[*] Building with cargo (release)..."
 cargo build --release
-cp target/release/backend target/release/download_channel target/release/routine_update /yt && cargo clean
+cp target/release/backend target/release/download_channel target/release/routine_update "$MEDIA_ROOT" && cargo clean
 
 echo "[*] Stopping existing screen session for backend (if any)..."
 if screen -list | grep -q "\.${SCREEN_NAME_BACKEND}"; then
@@ -48,16 +71,19 @@ if screen -list | grep -q "\.${SCREEN_NAME_ROUTINEUPDATE}"; then
     screen -S "$SCREEN_NAME_ROUTINEUPDATE" -X quit || true
 fi
 
-echo "[*] Starting new screen session..."
-screen -dmS "$SCREEN_NAME_BACKEND" /yt/backend
-screen -dmS "$SCREEN_NAME_BACKEND" /yt/routine_update
+echo "[*] Starting new screen sessions..."
+screen -dmS "$SCREEN_NAME_BACKEND" "$MEDIA_ROOT/backend" --media-root "$MEDIA_ROOT"
+screen -dmS "$SCREEN_NAME_ROUTINEUPDATE" "$MEDIA_ROOT/routine_update" --media-root "$MEDIA_ROOT" --www-root "$WWW_ROOT"
 
 echo "[*] Restarting nginx..."
 systemctl restart "$NGINX_SERVICE"
 
 echo "[*] Done."
-EOF
-tee /etc/systemd/system/software-updater.service <<'EOF'
+SCRIPT
+
+chmod +x "$HELPER_SCRIPT"
+
+cat <<EOF > /etc/systemd/system/software-updater.service
 [Unit]
 Description=Update, build (cargo), run software in screen, then restart nginx
 After=network-online.target
@@ -66,8 +92,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory=/www/newtube.com/
-ExecStart=/yt/viewtube-update-build-run.sh 
+WorkingDirectory="$WWW_ROOT"
+ExecStart="$HELPER_SCRIPT"
 
 # Optional: give it more time for compiling
 TimeoutStartSec=3600
@@ -75,7 +101,8 @@ TimeoutStartSec=3600
 [Install]
 WantedBy=multi-user.target
 EOF
-tee /etc/systemd/system/software-updater.timer <<'EOF'
+
+cat <<'EOF' > /etc/systemd/system/software-updater.timer
 [Unit]
 Description=Run software-updater.service daily
 
@@ -87,10 +114,9 @@ Unit=software-updater.service
 [Install]
 WantedBy=timers.target
 EOF
-chmod +x /yt/viewtube-update-build-run.sh 
+
 systemctl daemon-reload
 systemctl start software-updater.service
-systemctl daemon-reload
 systemctl enable --now software-updater.timer
 # Check status
 systemctl status software-updater.timer
