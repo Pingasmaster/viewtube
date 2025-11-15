@@ -2,6 +2,9 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Parser};
+use newtube_tools::config::{
+    DEFAULT_CONFIG_PATH, DEFAULT_NEWTUBE_PORT, EnvConfig, read_env_config,
+};
 use std::{
     env, fs,
     io::{self, Write},
@@ -12,7 +15,6 @@ use std::{
 
 const DEFAULT_MEDIA_DIR: &str = "/yt";
 const DEFAULT_WWW_DIR: &str = "/www/newtube.com";
-const DEFAULT_CONFIG_PATH: &str = "/etc/viewtube-env";
 const HELPER_SCRIPT_NAME: &str = "viewtube-update-build-run.sh";
 const SOFTWARE_SERVICE: &str = "software-updater.service";
 const SOFTWARE_TIMER: &str = "software-updater.timer";
@@ -54,6 +56,12 @@ struct Cli {
     )]
     www_dir: Option<PathBuf>,
     #[arg(
+        long = "port",
+        value_name = "PORT",
+        help = "Override the backend API port (default 8080)"
+    )]
+    port: Option<u16>,
+    #[arg(
         long = "domain",
         value_name = "NAME",
         help = "Domain name serving ViewTube (e.g., example.com)"
@@ -81,16 +89,41 @@ fn main() -> Result<()> {
     ensure_root()?;
 
     let existing_env = read_env_config(&cli.config)?;
-    let media_root = cli
-        .media_dir
-        .clone()
-        .or_else(|| existing_env.as_ref().and_then(|cfg| cfg.media_root.clone()))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_MEDIA_DIR));
-    let www_root = cli
-        .www_dir
-        .clone()
-        .or_else(|| existing_env.as_ref().and_then(|cfg| cfg.www_root.clone()))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_WWW_DIR));
+    let needs_prompt = !cli.uninstall || cli.reinstall;
+    let port_arg = cli.port;
+    let (media_root, www_root, newtube_port) = if needs_prompt {
+        (
+            resolve_media_root(
+                cli.media_dir.clone(),
+                existing_env.as_ref().and_then(|cfg| cfg.media_root.clone()),
+                cli.assume_yes,
+            )?,
+            resolve_www_root(
+                cli.www_dir.clone(),
+                existing_env.as_ref().and_then(|cfg| cfg.www_root.clone()),
+                cli.assume_yes,
+            )?,
+            resolve_port(
+                port_arg,
+                existing_env.as_ref().and_then(|cfg| cfg.newtube_port),
+                cli.assume_yes,
+            )?,
+        )
+    } else {
+        (
+            cli.media_dir
+                .clone()
+                .or_else(|| existing_env.as_ref().and_then(|cfg| cfg.media_root.clone()))
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_MEDIA_DIR)),
+            cli.www_dir
+                .clone()
+                .or_else(|| existing_env.as_ref().and_then(|cfg| cfg.www_root.clone()))
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_WWW_DIR)),
+            port_arg
+                .or_else(|| existing_env.as_ref().and_then(|cfg| cfg.newtube_port))
+                .unwrap_or(DEFAULT_NEWTUBE_PORT),
+        )
+    };
     let app_version = determine_version(&repo_root)?;
 
     let domain = if cli.uninstall && !cli.reinstall {
@@ -108,6 +141,7 @@ fn main() -> Result<()> {
         let install_config = InstallConfig {
             media_root,
             www_root,
+            newtube_port,
             config_path: cli.config.clone(),
             domain_name: domain.expect("domain required"),
             app_version,
@@ -125,6 +159,7 @@ fn main() -> Result<()> {
     let install_config = InstallConfig {
         media_root,
         www_root,
+        newtube_port,
         config_path: cli.config,
         domain_name: domain.expect("domain required"),
         app_version,
@@ -138,18 +173,11 @@ fn main() -> Result<()> {
 struct InstallConfig {
     media_root: PathBuf,
     www_root: PathBuf,
+    newtube_port: u16,
     config_path: PathBuf,
     domain_name: String,
     app_version: String,
     assume_yes: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-struct EnvConfig {
-    media_root: Option<PathBuf>,
-    www_root: Option<PathBuf>,
-    app_version: Option<String>,
-    domain_name: Option<String>,
 }
 
 fn install(cfg: InstallConfig) -> Result<()> {
@@ -242,37 +270,12 @@ fn ensure_root() -> Result<()> {
     Ok(())
 }
 
-fn read_env_config(path: &Path) -> Result<Option<EnvConfig>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content =
-        fs::read_to_string(path).with_context(|| format!("Reading {}", path.display()))?;
-    let mut cfg = EnvConfig::default();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((key, value_raw)) = trimmed.split_once('=') {
-            let value = value_raw.trim().trim_matches('"');
-            match key {
-                "MEDIA_ROOT" => cfg.media_root = Some(PathBuf::from(value)),
-                "WWW_ROOT" => cfg.www_root = Some(PathBuf::from(value)),
-                "APP_VERSION" => cfg.app_version = Some(value.to_string()),
-                "DOMAIN_NAME" => cfg.domain_name = Some(value.to_string()),
-                _ => {}
-            }
-        }
-    }
-    Ok(Some(cfg))
-}
-
 fn write_env_config(cfg: &InstallConfig) -> Result<()> {
     let content = format!(
-        "MEDIA_ROOT=\"{}\"\nWWW_ROOT=\"{}\"\nAPP_VERSION=\"{}\"\nDOMAIN_NAME=\"{}\"\n",
+        "MEDIA_ROOT=\"{}\"\nWWW_ROOT=\"{}\"\nNEWTUBE_PORT=\"{}\"\nAPP_VERSION=\"{}\"\nDOMAIN_NAME=\"{}\"\n",
         cfg.media_root.display(),
         cfg.www_root.display(),
+        cfg.newtube_port,
         cfg.app_version,
         cfg.domain_name
     );
@@ -280,6 +283,158 @@ fn write_env_config(cfg: &InstallConfig) -> Result<()> {
         .with_context(|| format!("Writing {}", cfg.config_path.display()))?;
     fs::set_permissions(&cfg.config_path, fs::Permissions::from_mode(0o600))?;
     Ok(())
+}
+
+fn resolve_media_root(
+    cli_value: Option<PathBuf>,
+    existing: Option<PathBuf>,
+    assume_yes: bool,
+) -> Result<PathBuf> {
+    if let Some(path) = cli_value {
+        return Ok(path);
+    }
+    if let Some(ref existing_path) = existing
+        && (assume_yes
+            || prompt_yes_no(
+                &format!(
+                    "Use detected media root '{}' (stores downloaded videos and metadata)?",
+                    existing_path.display()
+                ),
+                true,
+            )?)
+    {
+        return Ok(existing_path.clone());
+    }
+    if assume_yes {
+        log_info(format!(
+            "Using default media root {} due to --assume-yes",
+            DEFAULT_MEDIA_DIR
+        ));
+        return Ok(PathBuf::from(DEFAULT_MEDIA_DIR));
+    }
+    prompt_for_media_root(existing)
+}
+
+fn resolve_www_root(
+    cli_value: Option<PathBuf>,
+    existing: Option<PathBuf>,
+    assume_yes: bool,
+) -> Result<PathBuf> {
+    if let Some(path) = cli_value {
+        return Ok(path);
+    }
+    if let Some(ref existing_path) = existing
+        && (assume_yes
+            || prompt_yes_no(
+                &format!(
+                    "Use detected WWW root '{}' (nginx will serve the web UI from here)?",
+                    existing_path.display()
+                ),
+                true,
+            )?)
+    {
+        return Ok(existing_path.clone());
+    }
+    if assume_yes {
+        log_info(format!(
+            "Using default WWW root {} due to --assume-yes",
+            DEFAULT_WWW_DIR
+        ));
+        return Ok(PathBuf::from(DEFAULT_WWW_DIR));
+    }
+    prompt_for_www_root(existing)
+}
+
+fn resolve_port(cli_value: Option<u16>, existing: Option<u16>, assume_yes: bool) -> Result<u16> {
+    if let Some(port) = cli_value {
+        return Ok(port);
+    }
+    if let Some(existing_port) = existing
+        && (assume_yes
+            || prompt_yes_no(
+                &format!("Use detected NEWTUBE_PORT '{existing_port}' (backend API listens here)?"),
+                true,
+            )?)
+    {
+        return Ok(existing_port);
+    }
+    if assume_yes {
+        log_info(format!(
+            "Using default NEWTUBE_PORT {} due to --assume-yes",
+            DEFAULT_NEWTUBE_PORT
+        ));
+        return Ok(DEFAULT_NEWTUBE_PORT);
+    }
+    prompt_for_port(existing)
+}
+
+fn prompt_for_media_root(default: Option<PathBuf>) -> Result<PathBuf> {
+    println!();
+    println!(
+        "Media root is the directory where ViewTube stores every downloaded video, audio file, subtitle, thumbnail, and the metadata database."
+    );
+    println!(
+        "Pick a location with ample free space; hundreds of gigabytes may be required depending on your library."
+    );
+    let suggested = default.unwrap_or_else(|| PathBuf::from(DEFAULT_MEDIA_DIR));
+    prompt_for_path("Enter the full path for the media root", suggested)
+}
+
+fn prompt_for_www_root(default: Option<PathBuf>) -> Result<PathBuf> {
+    println!();
+    println!(
+        "WWW root is the folder nginx serves to browsers. It will contain the built ViewTube frontend assets (index.html, JS, CSS)."
+    );
+    println!(
+        "Choose the directory you want to expose via HTTPS; the installer will deploy the nginx config pointing here."
+    );
+    let suggested = default.unwrap_or_else(|| PathBuf::from(DEFAULT_WWW_DIR));
+    prompt_for_path("Enter the full path for the WWW root", suggested)
+}
+
+fn prompt_for_port(default: Option<u16>) -> Result<u16> {
+    println!();
+    println!("NEWTUBE_PORT controls which TCP port the backend API listens on.");
+    println!(
+        "Keep 8080 unless another service already uses it or you plan to front it with a reverse proxy."
+    );
+    let suggested = default.unwrap_or(DEFAULT_NEWTUBE_PORT);
+    loop {
+        print!("Enter the port for the backend API [{}]: ", suggested);
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Ok(suggested);
+        }
+        match trimmed.parse::<u16>() {
+            Ok(value @ 1..=65535) => return Ok(value),
+            Ok(_) => println!("Port must be between 1 and 65535."),
+            Err(_) => println!("Please enter a valid number between 1 and 65535."),
+        }
+    }
+}
+
+fn prompt_for_path(prompt: &str, default_path: PathBuf) -> Result<PathBuf> {
+    let default_choice = default_path;
+    loop {
+        print!("{prompt} [{}]: ", default_choice.display());
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            bail!("Failed to read input");
+        }
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Ok(default_choice.clone());
+        }
+        let candidate = PathBuf::from(trimmed);
+        if candidate.is_absolute() {
+            return Ok(candidate);
+        }
+        println!("Please enter an absolute path (e.g., /srv/viewtube).");
+    }
 }
 
 fn resolve_domain(
@@ -528,11 +683,98 @@ fn write_helper_script(cfg: &InstallConfig) -> Result<()> {
 fn helper_script_contents(cfg: &InstallConfig) -> String {
     let config_path = shell_quote(&cfg.config_path);
     let app_dir = shell_quote(&cfg.www_root);
-    format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\n\nCONFIG_FILE={config_path}\n\nif [[ -f \"$CONFIG_FILE\" ]]; then\n    . \"$CONFIG_FILE\"\nelse\n    echo \"Missing $CONFIG_FILE; cannot continue.\" >&2\n    exit 1\nfi\n\nREPO_URL=\"https://github.com/Pingasmaster/viewtube.git\"\nSCREEN_NAME_ROUTINEUPDATE=\"routineupdate\"\nSCREEN_NAME_BACKEND=\"backend\"\nNGINX_SERVICE=\"nginx\"\n\nexport PATH=\"$PATH:/root/.cargo/bin:/usr/local/bin\"\n\nAPP_DIR={app_dir}\n\necho \"[*] Syncing repo...\"\nif [[ -d \"$APP_DIR/.git\" ]]; then\n    if ! git -C \"$APP_DIR\" pull; then\n        echo \"[!] git pull failed; recloning fresh copy...\"\n        rm -rf \"$APP_DIR\"\n        git clone \"$REPO_URL\" \"$APP_DIR\"\n    fi\nelse\n    rm -rf \"$APP_DIR\"\n    git clone \"$REPO_URL\" \"$APP_DIR\"\nfi\n\ncd \"$APP_DIR\"\n\ncleanup_repo() {{\n    rm -rf node_modules coverage\n    rm -f download_channel backend routine-update\n    cargo clean\n}}\n\ncleanup_repo\nCARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\\s*=\\s*\"([^\"]+)\"/\\1/')\nif [[ \"$APP_VERSION\" != \"$CARGO_VERSION\" ]]; then\n    cat <<EOF > \"$CONFIG_FILE\"\nMEDIA_ROOT=\"$MEDIA_ROOT\"\nWWW_ROOT=\"$WWW_ROOT\"\nAPP_VERSION=\"$CARGO_VERSION\"\nDOMAIN_NAME=\"$DOMAIN_NAME\"\nEOF\n    INSTALLER_BIN=\"$APP_DIR/target/release/installer\"\n    if [[ -x \"$INSTALLER_BIN\" ]]; then\n        echo \"[*] Detected version change ($APP_VERSION -> $CARGO_VERSION); rerunning installer...\"\n        exec \"$INSTALLER_BIN\" -y --media-dir \"$MEDIA_ROOT\" --www-dir \"$WWW_ROOT\" --domain \"$DOMAIN_NAME\"\n    else\n        echo \"Missing $INSTALLER_BIN; cannot re-run installer.\" >&2\n        exit 1\n    fi\nfi\n\necho \"[*] Building with cargo (release)...\"\ncargo build --release\ncp target/release/backend target/release/download_channel target/release/routine_update \"$MEDIA_ROOT\" && cargo clean\n\necho \"[*] Stopping existing screen session for backend (if any)...\"\nif screen -list | grep -q \"\\.$SCREEN_NAME_BACKEND\"; then\n    screen -S \"$SCREEN_NAME_BACKEND\" -X quit || true\nfi\n\necho \"[*] Stopping existing screen session for routine update (if any)...\"\nif screen -list | grep -q \"\\.$SCREEN_NAME_ROUTINEUPDATE\"; then\n    screen -S \"$SCREEN_NAME_ROUTINEUPDATE\" -X quit || true\nfi\n\necho \"[*] Starting new screen sessions...\"\nscreen -dmS \"$SCREEN_NAME_BACKEND\" \"$MEDIA_ROOT/backend\" --media-root \"$MEDIA_ROOT\"\nscreen -dmS \"$SCREEN_NAME_ROUTINEUPDATE\" \"$MEDIA_ROOT/routine_update\" --media-root \"$MEDIA_ROOT\" --www-root \"$WWW_ROOT\"\n\necho \"[*] Restarting nginx...\"\nsystemctl restart \"$NGINX_SERVICE\"\n\necho \"[*] Done.\"\n",
-        config_path = config_path,
-        app_dir = app_dir
-    )
+    const TEMPLATE: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_FILE=__CONFIG_PATH__
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    . "$CONFIG_FILE"
+else
+    echo "Missing $CONFIG_FILE; cannot continue." >&2
+    exit 1
+fi
+
+if [[ -z "${NEWTUBE_PORT:-}" ]]; then
+    NEWTUBE_PORT="8080"
+fi
+
+REPO_URL="https://github.com/Pingasmaster/viewtube.git"
+SCREEN_NAME_ROUTINEUPDATE="routineupdate"
+SCREEN_NAME_BACKEND="backend"
+NGINX_SERVICE="nginx"
+
+export PATH="$PATH:/root/.cargo/bin:/usr/local/bin"
+
+APP_DIR=__APP_DIR__
+
+echo "[*] Syncing repo..."
+if [[ -d "$APP_DIR/.git" ]]; then
+    if ! git -C "$APP_DIR" pull; then
+        echo "[!] git pull failed; recloning fresh copy..."
+        rm -rf "$APP_DIR"
+        git clone "$REPO_URL" "$APP_DIR"
+    fi
+else
+    rm -rf "$APP_DIR"
+    git clone "$REPO_URL" "$APP_DIR"
+fi
+
+cd "$APP_DIR"
+
+cleanup_repo() {
+    rm -rf node_modules coverage
+    rm -f download_channel backend routine-update
+    cargo clean
+}
+
+cleanup_repo
+CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+if [[ "$APP_VERSION" != "$CARGO_VERSION" ]]; then
+    cat <<EOF > "$CONFIG_FILE"
+MEDIA_ROOT="$MEDIA_ROOT"
+WWW_ROOT="$WWW_ROOT"
+NEWTUBE_PORT="$NEWTUBE_PORT"
+APP_VERSION="$CARGO_VERSION"
+DOMAIN_NAME="$DOMAIN_NAME"
+EOF
+    INSTALLER_BIN="$APP_DIR/target/release/installer"
+    if [[ -x "$INSTALLER_BIN" ]]; then
+        echo "[*] Detected version change ($APP_VERSION -> $CARGO_VERSION); rerunning installer..."
+        exec "$INSTALLER_BIN" -y --config "$CONFIG_FILE" --media-dir "$MEDIA_ROOT" --www-dir "$WWW_ROOT" --port "$NEWTUBE_PORT" --domain "$DOMAIN_NAME"
+    else
+        echo "Missing $INSTALLER_BIN; cannot re-run installer." >&2
+        exit 1
+    fi
+fi
+
+echo "[*] Building with cargo (release)..."
+cargo build --release
+cp target/release/backend target/release/download_channel target/release/routine_update "$MEDIA_ROOT" && cargo clean
+
+echo "[*] Stopping existing screen session for backend (if any)..."
+if screen -list | grep -q "\.$SCREEN_NAME_BACKEND"; then
+    screen -S "$SCREEN_NAME_BACKEND" -X quit || true
+fi
+
+echo "[*] Stopping existing screen session for routine update (if any)..."
+if screen -list | grep -q "\.$SCREEN_NAME_ROUTINEUPDATE"; then
+    screen -S "$SCREEN_NAME_ROUTINEUPDATE" -X quit || true
+fi
+
+echo "[*] Starting new screen sessions..."
+screen -dmS "$SCREEN_NAME_BACKEND" "$MEDIA_ROOT/backend" --config "$CONFIG_FILE"
+screen -dmS "$SCREEN_NAME_ROUTINEUPDATE" "$MEDIA_ROOT/routine_update" --config "$CONFIG_FILE"
+
+echo "[*] Restarting nginx..."
+systemctl restart "$NGINX_SERVICE"
+
+echo "[*] Done."
+"#;
+
+    TEMPLATE
+        .replace("__CONFIG_PATH__", &config_path)
+        .replace("__APP_DIR__", &app_dir)
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -731,6 +973,7 @@ mod tests {
         let cfg = InstallConfig {
             media_root: PathBuf::from("/yt"),
             www_root: PathBuf::from("/www"),
+            newtube_port: 8080,
             config_path: PathBuf::from("/etc/viewtube-env"),
             domain_name: "example.com".into(),
             app_version: "1.0.0".into(),
@@ -738,6 +981,7 @@ mod tests {
         };
         let contents = helper_script_contents(&cfg);
         assert!(contents.contains("cleanup_repo"));
-        assert!(contents.contains("exec \"$INSTALLER_BIN\" -y"));
+        assert!(contents.contains("NEWTUBE_PORT"));
+        assert!(contents.contains("--config \"$CONFIG_FILE\""));
     }
 }

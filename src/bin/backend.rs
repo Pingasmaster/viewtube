@@ -23,6 +23,7 @@ use axum::{
     routing::get,
 };
 use mime_guess::{MimeGuess, mime::Mime};
+use newtube_tools::config::{DEFAULT_CONFIG_PATH, load_runtime_paths_from};
 use newtube_tools::metadata::{
     CommentRecord, MetadataReader, SubtitleCollection, VideoRecord, VideoSource,
 };
@@ -39,7 +40,6 @@ use tokio_util::io::ReaderStream;
 
 // Directory layout defaults. Keeping them centralized means the same values
 // can be used when serving both long-form and short-form videos.
-const DEFAULT_MEDIA_ROOT: &str = "/yt";
 const VIDEOS_SUBDIR: &str = "videos";
 const SHORTS_SUBDIR: &str = "shorts";
 const THUMBNAILS_SUBDIR: &str = "thumbnails";
@@ -48,7 +48,6 @@ const SUBTITLES_SUBDIR: &str = "subtitles";
 // Network defaults. Both can be overridden through env vars/env but in most
 // deployments we bind to every interface on the host.
 const DEFAULT_HOST: &str = "0.0.0.0";
-const DEFAULT_PORT: u16 = 8080;
 
 // SQLite database file relative to the media root.
 const METADATA_DB_FILE: &str = "metadata.db";
@@ -56,6 +55,7 @@ const METADATA_DB_FILE: &str = "metadata.db";
 #[derive(Debug, Clone)]
 struct BackendArgs {
     media_root: PathBuf,
+    newtube_port: u16,
 }
 
 impl BackendArgs {
@@ -63,20 +63,25 @@ impl BackendArgs {
         Self::from_iter(std::env::args().skip(1))
     }
 
-    #[cfg(test)]
-    fn from_slice(values: &[&str]) -> Result<Self> {
-        Self::from_iter(values.iter().map(|value| value.to_string()))
-    }
-
     fn from_iter<I>(iter: I) -> Result<Self>
     where
         I: IntoIterator<Item = String>,
     {
-        let mut media_root = PathBuf::from(DEFAULT_MEDIA_ROOT);
+        let mut media_root_override: Option<PathBuf> = None;
+        let mut port_override: Option<u16> = None;
+        let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
         let mut args = iter.into_iter();
         while let Some(arg) = args.next() {
             if let Some(value) = arg.strip_prefix("--media-root=") {
-                media_root = PathBuf::from(value);
+                media_root_override = Some(PathBuf::from(value));
+                continue;
+            }
+            if let Some(value) = arg.strip_prefix("--port=") {
+                port_override = Some(parse_port_arg(value)?);
+                continue;
+            }
+            if let Some(value) = arg.strip_prefix("--config=") {
+                config_path = PathBuf::from(value);
                 continue;
             }
 
@@ -85,14 +90,39 @@ impl BackendArgs {
                     let value = args
                         .next()
                         .ok_or_else(|| anyhow!("--media-root requires a value"))?;
-                    media_root = PathBuf::from(value);
+                    media_root_override = Some(PathBuf::from(value));
+                }
+                "--port" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow!("--port requires a value"))?;
+                    port_override = Some(parse_port_arg(&value)?);
+                }
+                "--config" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow!("--config requires a value"))?;
+                    config_path = PathBuf::from(value);
                 }
                 _ => return Err(anyhow!("unknown argument: {arg}")),
             }
         }
 
-        Ok(Self { media_root })
+        let runtime_paths = load_runtime_paths_from(&config_path)?;
+        let media_root = media_root_override.unwrap_or(runtime_paths.media_root);
+        let newtube_port = port_override.unwrap_or(runtime_paths.newtube_port);
+
+        Ok(Self {
+            media_root,
+            newtube_port,
+        })
     }
+}
+
+fn parse_port_arg(value: &str) -> Result<u16> {
+    value
+        .parse::<u16>()
+        .context("expected a numeric port between 0 and 65535")
 }
 
 #[derive(Clone, Copy)]
@@ -237,14 +267,17 @@ type ApiResult<T> = Result<T, ApiError>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let BackendArgs { media_root } = BackendArgs::parse()?;
+    let BackendArgs {
+        media_root,
+        newtube_port,
+    } = BackendArgs::parse()?;
 
     // Allow overriding the port via environment variable while retaining the
     // easy default for local testing.
     let port = std::env::var("NEWTUBE_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
+        .unwrap_or(newtube_port);
 
     let metadata_path = media_root.join(METADATA_DB_FILE);
     let reader = MetadataReader::new(&metadata_path).context("initializing metadata reader")?;
@@ -709,8 +742,8 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use serde_json::Value;
-    use std::{path::PathBuf, sync::Arc};
-    use tempfile::tempdir;
+    use std::{io::Write, path::PathBuf, sync::Arc};
+    use tempfile::{NamedTempFile, tempdir};
 
     struct BackendTestContext {
         _temp: tempfile::TempDir,
@@ -816,16 +849,45 @@ mod tests {
         }
     }
 
+    fn write_runtime_config(media: &str, www: &str, port: u16) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "MEDIA_ROOT=\"{media}\"\nWWW_ROOT=\"{www}\"\nNEWTUBE_PORT=\"{port}\"\nAPP_VERSION=\"1.0\"\nDOMAIN_NAME=\"example.com\"\n"
+        )
+        .unwrap();
+        file
+    }
+
+    fn parse_backend_args(config: &NamedTempFile, extra: &[&str]) -> BackendArgs {
+        let mut argv = vec![
+            "--config".to_string(),
+            config.path().to_string_lossy().into_owned(),
+        ];
+        argv.extend(extra.iter().map(|value| value.to_string()));
+        BackendArgs::from_iter(argv).expect("parsed args")
+    }
+
     #[test]
     fn backend_args_default_media_root() {
-        let args = BackendArgs::from_slice(&[]).expect("parsed args");
-        assert_eq!(args.media_root, PathBuf::from(DEFAULT_MEDIA_ROOT));
+        let config = write_runtime_config("/yt/test", "/www/test", 4242);
+        let args = parse_backend_args(&config, &[]);
+        assert_eq!(args.media_root, PathBuf::from("/yt/test"));
+        assert_eq!(args.newtube_port, 4242);
     }
 
     #[test]
     fn backend_args_override_media_root() {
-        let args = BackendArgs::from_slice(&["--media-root", "/custom/media"]).unwrap();
+        let config = write_runtime_config("/yt/test", "/www/test", 4242);
+        let args = parse_backend_args(&config, &["--media-root", "/custom/media"]);
         assert_eq!(args.media_root, PathBuf::from("/custom/media"));
+    }
+
+    #[test]
+    fn backend_args_override_port() {
+        let config = write_runtime_config("/yt/test", "/www/test", 4242);
+        let args = parse_backend_args(&config, &["--port", "9000"]);
+        assert_eq!(args.newtube_port, 9000);
     }
 
     #[tokio::test]

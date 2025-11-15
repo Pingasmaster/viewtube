@@ -9,6 +9,7 @@
 
 use anyhow::{Context, Result, bail};
 use chrono::{NaiveDate, Utc};
+use newtube_tools::config::{DEFAULT_CONFIG_PATH, load_runtime_paths_from};
 use newtube_tools::metadata::{
     CommentRecord, MetadataStore, SubtitleCollection, SubtitleTrack, VideoRecord, VideoSource,
 };
@@ -23,6 +24,7 @@ use std::process::{Command, Stdio};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard};
 
+#[cfg(test)]
 const DEFAULT_MEDIA_ROOT: &str = "/yt";
 const VIDEOS_SUBDIR: &str = "videos";
 const SHORTS_SUBDIR: &str = "shorts";
@@ -31,6 +33,7 @@ const THUMBNAILS_SUBDIR: &str = "thumbnails";
 const COMMENTS_SUBDIR: &str = "comments";
 const ARCHIVE_FILE: &str = "download-archive.txt";
 const COOKIES_FILE: &str = "cookies.txt";
+#[cfg(test)]
 const DEFAULT_WWW_ROOT: &str = "/www/newtube.com";
 const METADATA_DB_FILE: &str = "metadata.db";
 
@@ -107,8 +110,9 @@ impl DownloaderArgs {
     where
         I: IntoIterator<Item = String>,
     {
-        let mut media_root = PathBuf::from(DEFAULT_MEDIA_ROOT);
-        let mut www_root = PathBuf::from(DEFAULT_WWW_ROOT);
+        let mut media_root_override: Option<PathBuf> = None;
+        let mut www_root_override: Option<PathBuf> = None;
+        let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
         let mut channel_url: Option<String> = None;
         let mut args = iter.into_iter();
 
@@ -121,11 +125,15 @@ impl DownloaderArgs {
             }
 
             if let Some(value) = arg.strip_prefix("--media-root=") {
-                media_root = PathBuf::from(value);
+                media_root_override = Some(PathBuf::from(value));
                 continue;
             }
             if let Some(value) = arg.strip_prefix("--www-root=") {
-                www_root = PathBuf::from(value);
+                www_root_override = Some(PathBuf::from(value));
+                continue;
+            }
+            if let Some(value) = arg.strip_prefix("--config=") {
+                config_path = PathBuf::from(value);
                 continue;
             }
 
@@ -134,13 +142,19 @@ impl DownloaderArgs {
                     let value = args
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("--media-root requires a value"))?;
-                    media_root = PathBuf::from(value);
+                    media_root_override = Some(PathBuf::from(value));
                 }
                 "--www-root" => {
                     let value = args
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("--www-root requires a value"))?;
-                    www_root = PathBuf::from(value);
+                    www_root_override = Some(PathBuf::from(value));
+                }
+                "--config" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--config requires a value"))?;
+                    config_path = PathBuf::from(value);
                 }
                 _ if arg.starts_with('-') => {
                     bail!("unknown argument: {arg}");
@@ -153,9 +167,13 @@ impl DownloaderArgs {
 
         let channel_url = channel_url.ok_or_else(|| {
             anyhow::anyhow!(
-                "Usage: download_channel [--media-root <path>] [--www-root <path>] <channel_url>"
+                "Usage: download_channel [--config <path>] [--media-root <path>] [--www-root <path>] <channel_url>"
             )
         })?;
+
+        let runtime_paths = load_runtime_paths_from(&config_path)?;
+        let media_root = media_root_override.unwrap_or_else(|| runtime_paths.media_root.clone());
+        let www_root = www_root_override.unwrap_or_else(|| runtime_paths.www_root.clone());
 
         Ok(Self {
             channel_url,
@@ -1394,8 +1412,18 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::{fs, path::PathBuf};
-    use tempfile::tempdir;
+    use std::{fs, io::Write, path::PathBuf};
+    use tempfile::{NamedTempFile, tempdir};
+
+    fn write_runtime_config(media: &str, www: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "MEDIA_ROOT=\"{media}\"\nWWW_ROOT=\"{www}\"\nNEWTUBE_PORT=\"8080\"\nAPP_VERSION=\"1.0\"\nDOMAIN_NAME=\"example.com\"\n"
+        )
+        .unwrap();
+        file
+    }
 
     fn temp_paths() -> (tempfile::TempDir, Paths) {
         let dir = tempdir().unwrap();
@@ -1405,7 +1433,13 @@ mod tests {
 
     #[test]
     fn downloader_args_use_defaults() {
-        let args = DownloaderArgs::from_slice(&["https://www.youtube.com/@Channel"]).unwrap();
+        let config = write_runtime_config(DEFAULT_MEDIA_ROOT, DEFAULT_WWW_ROOT);
+        let args = DownloaderArgs::from_slice(&[
+            "--config",
+            config.path().to_str().unwrap(),
+            "https://www.youtube.com/@Channel",
+        ])
+        .unwrap();
         assert_eq!(args.channel_url, "https://www.youtube.com/@Channel");
         assert_eq!(args.media_root, PathBuf::from(DEFAULT_MEDIA_ROOT));
         assert_eq!(args.www_root, PathBuf::from(DEFAULT_WWW_ROOT));
@@ -1413,7 +1447,10 @@ mod tests {
 
     #[test]
     fn downloader_args_override_roots() {
+        let config = write_runtime_config(DEFAULT_MEDIA_ROOT, DEFAULT_WWW_ROOT);
         let args = DownloaderArgs::from_slice(&[
+            "--config",
+            config.path().to_str().unwrap(),
             "--media-root",
             "/data/media",
             "--www-root",
