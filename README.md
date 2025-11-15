@@ -8,29 +8,60 @@ The Javascript caches pages and loads them only one time via a service worker to
 
 ## Using the Rust Backend
 
-Compile and get the binaries in the current directory:
+Compile and get the binaries in the current directory (change `MEDIA_ROOT`/`WWW_ROOT` in /etc/viewtube-env BEFORE running the `setup-script.sh` the setup script if you want something else than `/yt` + `/www/newtube.com`):
+To compile manually:
 
 ```
 cargo clean && cargo build --release
 cp target/release/backend target/release/download_channel target/release/routine_update .
 ```
 
-Make sure the downloader has created the directory layout expected by the server:
+By default this software exploit a media root and a www root, which are used to store youtube videos/shorts/metadata and serve web content respectively. www-root is also by default the place where the github will be cloned into.
 
  - Videos + muxed formats live under `/yt/videos/<video_id>/`.
  - Shorts live under `/yt/shorts/<video_id>/`.
  - Thumbnails and subtitles live under `/yt/thumbnails/<video_id>/` and `/yt/subtitles/<video_id>/` respectively.
 - The SQLite metadata database resides at `/yt/metadata.db`, website should be served via a nginx reverse proxy pointed to `/www/newtube.com/index.html` which is the app's entry point.
 
+Example of such a reverse proxy:
+
+```
+server {
+    listen 80;
+    server_name domain.com;
+
+    return 301 https://domain.com$request_uri;
+}
+
+server {
+    listen 443 ssl;   # match the URL you redirect to
+    server_name domain.com;
+    http2 on;
+
+    ssl_certificate /etc/letsencrypt/live/domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/domain.com/privkey.pem;
+    ssl_prefer_server_ciphers on;
+
+    root /www/newtube.com;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
 Start the API server:
 
-The only runtime knob is the port with `NEWTUBE_PORT=9090` (default `8080`).
+The runtime knobs are the port with `NEWTUBE_PORT` (default `8080`), and the default media and www directories via `--media-root` and `--www-root`.
 
 ```
 screen -S "backend" ./backend
 ```
 
 CTRL+A and CTRL+D to exit.
+
+The software is not meant to be run manually like this though. A simple execution of ./setup-script.sh will get you up and running.
 
 ## Bakend implementation details
 
@@ -43,8 +74,8 @@ CTRL+A and CTRL+D to exit.
   - `--media-root <path>` overrides the default `/yt` library root (the metadata database is read from `<path>/metadata.db`).
 - Usage example:
   ```bash
-  NEWTUBE_PORT=9000 ./backend
-  # -> API server listening on http://0.0.0.0:9000
+  ./backend
+  # -> API server listening on http://0.0.0.0:8080
   ```
 
 ### `download_channel`
@@ -83,12 +114,19 @@ CTRL+A and CTRL+D to exit.
 
 All three utilities share the same Rust crate (`newtube_tools`), so adding new metadata fields only requires updating the structs once.
 
+## Deployment helper scripts
+
+- `setup-software.sh` (root only) wires the whole stack onto a box: it reads/writes `/etc/viewtube-env`, respects `MEDIA_ROOT`/`WWW_ROOT`, generates the helper `viewtube-update-build-run.sh` under the media root, installs the `software-updater.service`/`.timer`, runs `cleanup-repo.sh`, and copies fresh binaries to the media root. On version bumps (Cargo `version` change) it rewrites the config and re-runs itself so the helper script living under `/yt` picks up the update automatically.
+- `cleanup-repo.sh` scrubs deployment-only files after each sync so the served tree contains only the assets + binaries you actually need.
+
 # Tests
 
 Before runing any tests, you need to run `npm install` to install modules.
 
 `cargo test` covers the Rust backend (module `metadata.rs`)
 
-`npm run test` : launches Jest with `fake-indexeddb`, `jsdom` and validates front helpers with et valide les helpers front (normalisation vidéo, opérations IndexedDB, API client, stockage user). Les fichiers concernés se trouvent dans `tests/js/*.test.js`
+`npm run test` / `npm run test:unit` : launches Jest with `fake-indexeddb`, `jsdom` and validates front helpers (normalisation vidéo, opérations IndexedDB, API client, stockage user). Les fichiers concernés se trouvent dans `tests/js/*.test.js`
 
-`npm run test:e2e` launches Cypress on port 4173 and runs `cypress/e2e/home.cy.js` who verifies the proper render of the Home video grid and sidebar switch between versions (normal / minimal/ none) according to desktop/tablet/mobile rules from `cypress/fixtures/bootstrap.json`
+`npm run test:coverage` : même suite Jest que ci-dessus mais enregistre un rapport HTML/LCOV sous `coverage/jest`
+
+`npm run test:e2e` : launches Cypress on port 4173. It now covers **both** `cypress/e2e/home.cy.js` (home grid + sidebar states per desktop/tablet/mobile rules from `cypress/fixtures/bootstrap.json`) and `cypress/e2e/watch.cy.js` (video player metadata, comments rendering and like/dislike/subscription toggles with mocked API responses)
