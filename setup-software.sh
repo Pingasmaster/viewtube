@@ -50,25 +50,37 @@ export PATH="$PATH:/root/.cargo/bin:/usr/local/bin"
 
 APP_DIR="$WWW_ROOT"
 
-cd "$APP_DIR"
-
-echo "[*] Cloning repo..."
-git pull
-#rm -rf "$APP_DIR"
-#git clone "$REPO_URL" "$APP_DIR"
+echo "[*] Syncing repo..."
+if [[ -d "$APP_DIR/.git" ]]; then
+    if ! git -C "$APP_DIR" pull; then
+        echo "[!] git pull failed; recloning fresh copy..."
+        rm -rf "$APP_DIR"
+        git clone "$REPO_URL" "$APP_DIR"
+    fi
+else
+    git clone "$REPO_URL" "$APP_DIR"
+fi
 
 cd "$APP_DIR"
 ./cleanup-repo.sh
-#CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
-#if [[ "$APP_VERSION" != "$CARGO_VERSION" ]]; then
-#    echo "Detected version change ($APP_VERSION -> $CARGO_VERSION); refreshing ..."
-#    cat <<EOF > "$CONFIG_FILE"
-#MEDIA_ROOT="$MEDIA_ROOT"
-#WWW_ROOT="$WWW_ROOT"
-#APP_VERSION="$CARGO_VERSION"
-#EOF
-#fi
-#rm -f cleanup-repo.sh setup-software.sh
+CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+if [[ "$APP_VERSION" != "$CARGO_VERSION" ]]; then
+    echo "Detected version change ($APP_VERSION -> $CARGO_VERSION); refreshing ..."
+    cat <<EOF > "$CONFIG_FILE"
+MEDIA_ROOT="$MEDIA_ROOT"
+WWW_ROOT="$WWW_ROOT"
+APP_VERSION="$CARGO_VERSION"
+EOF
+    SETUP_SCRIPT_PATH="$APP_DIR/setup-software.sh"
+    if [[ -x "$SETUP_SCRIPT_PATH" ]]; then
+        echo "[*] Re-running setup from updated repo..."
+        APP_VERSION="$CARGO_VERSION" exec "$SETUP_SCRIPT_PATH"
+    else
+        echo "Missing $SETUP_SCRIPT_PATH; cannot re-run setup." >&2
+        exit 1
+    fi
+fi
+rm -f cleanup-repo.sh setup-software.sh
 
 echo "[*] Building with cargo (release)..."
 cargo build --release
@@ -139,8 +151,10 @@ systemctl enable --now software-updater.timer
 log "Running initial helper script (this may take a while; see output below)"
 "$HELPER_SCRIPT"
 
+log "software-updater.timer status"
+systemctl status software-updater.timer || true
+
+log "Upcoming runs (systemctl list-timers)"
+systemctl list-timers | grep software-updater || true
+
 log "Setup complete"
-# Check status
-#systemctl status software-updater.timer
-# Validate when it last/next ran
-#systemctl list-timers | grep software-updater
