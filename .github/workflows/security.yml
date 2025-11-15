@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6-beta
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -25,11 +25,10 @@ jobs:
         run: npm audit --production --audit-level=high
 
       - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
+        run: |
+          rustup set profile minimal
+          rustup toolchain install stable
+          rustup override set stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -38,7 +37,7 @@ jobs:
         run: cargo audit
 
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           severity: CRITICAL,HIGH
@@ -48,7 +47,7 @@ jobs:
           output: trivy-report.txt
 
       - name: Upload Trivy report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5.0.0
         with:
           name: trivy-report
           path: trivy-report.txt
