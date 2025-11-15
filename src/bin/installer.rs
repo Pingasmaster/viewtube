@@ -17,6 +17,7 @@ const HELPER_SCRIPT_NAME: &str = "viewtube-update-build-run.sh";
 const SOFTWARE_SERVICE: &str = "software-updater.service";
 const SOFTWARE_TIMER: &str = "software-updater.timer";
 const NGINX_SERVICE: &str = "nginx";
+const SCREEN_COMMAND: &str = "screen";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Install and manage ViewTube services.")]
@@ -159,6 +160,7 @@ fn install(cfg: InstallConfig) -> Result<()> {
         .with_context(|| format!("Creating www dir {}", cfg.www_root.display()))?;
 
     ensure_nginx_installed(cfg.assume_yes)?;
+    ensure_screen_installed(cfg.assume_yes)?;
     deploy_nginx_config(&cfg.domain_name, &cfg.www_root, cfg.assume_yes)?;
 
     write_env_config(&cfg)?;
@@ -409,6 +411,48 @@ fn install_nginx_package() -> Result<()> {
         other => bail!("Unsupported package manager {other}"),
     }
     run_command("systemctl", &["enable", "--now", NGINX_SERVICE])?;
+    Ok(())
+}
+
+fn ensure_screen_installed(assume_yes: bool) -> Result<()> {
+    if command_exists(SCREEN_COMMAND) {
+        log_info("screen command detected");
+        return Ok(());
+    }
+    log_info("screen command not detected");
+    if assume_yes || prompt_yes_no("Install screen via package manager?", false)? {
+        install_screen_package().context("Unable to install screen")?;
+    } else {
+        bail!("screen is required for setup");
+    }
+    Ok(())
+}
+
+fn install_screen_package() -> Result<()> {
+    let manager = detect_package_manager()
+        .ok_or_else(|| anyhow!("Could not detect a supported package manager"))?;
+    match manager {
+        "apt-get" => {
+            run_command("apt-get", &["update"])?;
+            run_command("apt-get", &["install", "-y", SCREEN_COMMAND])?;
+        }
+        "apt" => {
+            run_command("apt", &["update"])?;
+            run_command("apt", &["install", "-y", SCREEN_COMMAND])?;
+        }
+        "dnf" => run_command("dnf", &["install", "-y", SCREEN_COMMAND])?,
+        "yum" => run_command("yum", &["install", "-y", SCREEN_COMMAND])?,
+        "pacman" => run_command("pacman", &["-Sy", "--noconfirm", SCREEN_COMMAND])?,
+        "apk" => {
+            run_command("apk", &["update"])?;
+            run_command("apk", &["add", SCREEN_COMMAND])?;
+        }
+        "zypper" => {
+            run_command("zypper", &["refresh"])?;
+            run_command("zypper", &["install", "-y", SCREEN_COMMAND])?;
+        }
+        other => bail!("Unsupported package manager {other}"),
+    }
     Ok(())
 }
 

@@ -8,11 +8,14 @@ The Javascript caches pages and loads them only one time via a service worker to
 
 ## Install
 
-A one-liner will install everything you need, including auto-update scripts, and launch the backend. You just have to wait for the users to come and it will start downloading content automatically or download things yourself using `/yt/download_channel https://youtube.com/@LinustechTips`. Do `cat setup-software.sh` before running it (especially as root)! 
+A one-liner will install everything you need, including auto-update scripts, and launch the backend. You just have to wait for the users to come and it will start downloading content automatically or download things yourself using `/yt/download_channel https://youtube.com/@LinustechTips`.
 
 ```bash
-git clone https://github.com/Pingasmaster/viewtube.git && sudo ./viewtube/setup-software.sh && rm -rf ./viewtube
+git clone https://github.com/Pingasmaster/viewtube.git && cd viewtube && cargo build --release && sudo ./target/release/installer && rm -rf ./viewtube
 ```
+
+This software needs a `media root` and a `www root` directory, it will ask you where you want them while you install the software. By default they are `/yt/` for the media and `/www/newtube.com` for `www root`.
+Nginx is installed if it's not already and the correct config for the website is automatically put there when you run the `./installer`.
 
 ## Using the Rust Backend
 
@@ -20,16 +23,25 @@ Compile and get the binaries in the current directory (change `MEDIA_ROOT`/`WWW_
 To compile manually:
 
 ```bash
-cargo clean && cargo build --release
-cp target/release/backend target/release/download_channel target/release/routine_update .
+# Clone and build
+git clone https://github.com/Pingasmaster/viewtube.git && cd viewtube
+cargo build --release
+# Copy needed executables under /yt/ (or your media root directory).
+cp target/release/installer target/release/backend target/release/download_channel target/release/routine_update /yt/
 ```
 
-By default this software exploit a media root and a www root, which are used to store youtube videos/shorts/metadata and serve web content respectively. www-root is also by default the place where the github will be cloned into.
+`installer` can be used to install, uninstall, reinstall (manual forced update), and clean the www root of build artifacts. It is meant to run once, at the first install, and then never again except if you need to clean the www-root directory and remove junk files made by a manual build maybe.
+It check sif you have nginx and screen installed, prompt to install them if not, and puts the good nginx config in place if you wish (it asks for the domain name). It then clones the repo to the `www root` and installs a systemd service for the updater, which is a bash script that pulls the git repo under `www root` and sees if theres any update, if so it rebuilds the binaries and replace them and changes the software version in the config file. Its run at 3AM every single day. It also runs `routine_update` to download any new content from any channel already downloaded.
+`backend` is the backend api. Takes things under the media root directory (/yt/ by default). It's automatically run in the background by the command `screen` if you used the installer. You can also run it manually, it takes `www root` and `media root` from the config file or from parameters you can feed it.
+`download_channel` takes a youtube channel full url and downloads every single video and short from that channel. It also downloads the comments of these videos alongside metadata and subtitles.
+`routine_update` takes every single channel you already downloaded and retries to download them all, but remembers thanks to an archive what videos were already downloaded. Theres a metadata update mode which only redownloads metadata and subtitles and comments from a video which you can trigger manually. Right now the metadata mode is never trigger automatically.
 
- - Videos + muxed formats live under `/yt/videos/<video_id>/`.
- - Shorts live under `/yt/shorts/<video_id>/`.
- - Thumbnails and subtitles live under `/yt/thumbnails/<video_id>/` and `/yt/subtitles/<video_id>/` respectively.
-- The SQLite metadata database resides at `/yt/metadata.db`, website should be served via a nginx reverse proxy pointed to `/www/newtube.com/index.html` which is the app's entry point.
+This software needs a `media root` and a `www root` directory, which are used to store youtube videos/shorts/metadata and serve web content respectively. The `www root` is also by default the place where the github will be cloned into by `installer`.
+
+- Videos + muxed formats live under `/yt/videos/<video_id>/`.
+- Shorts live under `/yt/shorts/<video_id>/`.
+- Thumbnails and subtitles live under `/yt/thumbnails/<video_id>/` and `/yt/subtitles/<video_id>/` respectively.
+- The SQLite metadata database resides at `/yt/metadata.db`, website should be served via a nginx reverse proxy pointed to `/www/newtube.com/index.html` which is the app's entry point. 
 
 Example of such a reverse proxy:
 
@@ -61,7 +73,7 @@ server {
 
 Start the API server:
 
-The runtime knobs are the port with `NEWTUBE_PORT` (default `8080`), and the default media and www directories via `--media-root` and `--www-root`.
+The runtime knobs are the port of the api and the directories www root and media root which can be customized upon first `./installer` run or in `/etc/viewtubeconfig`
 
 ```
 screen -S "backend" ./backend
