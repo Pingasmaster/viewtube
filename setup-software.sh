@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+log() {
+    printf '[setup] %s\n' "$*"
+}
+
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root." >&2
     exit 1
@@ -12,14 +16,17 @@ WWW_ROOT="${WWW_ROOT:-/www/newtube.com}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 HELPER_SCRIPT="$MEDIA_ROOT/viewtube-update-build-run.sh"
 
+log "Creating MEDIA_ROOT ($MEDIA_ROOT) and WWW_ROOT ($WWW_ROOT)"
 mkdir -p "$MEDIA_ROOT" "$WWW_ROOT"
 
+log "Writing config to $CONFIG_FILE"
 cat <<EOF > "$CONFIG_FILE"
 MEDIA_ROOT="$MEDIA_ROOT"
 WWW_ROOT="$WWW_ROOT"
 APP_VERSION="$APP_VERSION"
 EOF
 
+log "Writing helper script to $HELPER_SCRIPT"
 cat <<'SCRIPT' > "$HELPER_SCRIPT"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -89,6 +96,7 @@ SCRIPT
 
 chmod +x "$HELPER_SCRIPT"
 
+log "Installing systemd service: software-updater.service"
 cat <<EOF > /etc/systemd/system/software-updater.service
 [Unit]
 Description=Update, build (cargo), run software in screen, then restart nginx
@@ -108,6 +116,7 @@ TimeoutStartSec=3600
 WantedBy=multi-user.target
 EOF
 
+log "Installing systemd timer: software-updater.timer"
 cat <<'EOF' > /etc/systemd/system/software-updater.timer
 [Unit]
 Description=Run software-updater.service daily
@@ -121,9 +130,16 @@ Unit=software-updater.service
 WantedBy=timers.target
 EOF
 
+log "Reloading systemd units"
 systemctl daemon-reload
-systemctl restart software-updater.service
-systemctl enable software-updater.timer
+
+log "Enabling and starting software-updater.timer"
+systemctl enable --now software-updater.timer
+
+log "Running initial helper script (this may take a while; see output below)"
+"$HELPER_SCRIPT"
+
+log "Setup complete"
 # Check status
 #systemctl status software-updater.timer
 # Validate when it last/next ran
