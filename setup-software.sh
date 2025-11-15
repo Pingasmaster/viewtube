@@ -51,9 +51,12 @@ cd "$APP_DIR"
 ./cleanup-repo.sh
 CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
 if [[ "$APP_VERSION" != "$CARGO_VERSION" ]]; then
-    echo "Versions differ, running setup again..."
-    ./setup-software.sh
-    exit 0
+    echo "Detected version change ($APP_VERSION -> $CARGO_VERSION); refreshing $CONFIG_FILE..."
+    cat <<EOF > "$CONFIG_FILE"
+MEDIA_ROOT="$MEDIA_ROOT"
+WWW_ROOT="$WWW_ROOT"
+APP_VERSION="$CARGO_VERSION"
+EOF
 fi
 rm -f cleanup-repo.sh setup-software.sh
 
@@ -92,8 +95,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory="$WWW_ROOT"
-ExecStart="$HELPER_SCRIPT"
+WorkingDirectory=$WWW_ROOT
+ExecStart=$HELPER_SCRIPT
 
 # Optional: give it more time for compiling
 TimeoutStartSec=3600
