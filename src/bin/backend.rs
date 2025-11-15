@@ -51,7 +51,7 @@ const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8080;
 
 // SQLite database location that the downloader keeps up to date.
-const METADATA_DB_PATH: &str = "/www/newtube.com/metadata.db";
+const METADATA_DB_PATH: &str = "/yt/metadata.db";
 
 #[derive(Clone, Copy)]
 enum MediaCategory {

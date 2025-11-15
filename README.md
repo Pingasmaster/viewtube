@@ -20,7 +20,7 @@ Make sure the downloader has created the directory layout expected by the server
  - Videos + muxed formats live under `/yt/videos/<video_id>/`.
  - Shorts live under `/yt/shorts/<video_id>/`.
  - Thumbnails and subtitles live under `/yt/thumbnails/<video_id>/` and `/yt/subtitles/<video_id>/` respectively.
- - The SQLite metadata database resides at `/www/newtube.com/metadata.db`, website should be served via a nginx reverse proxy pointed to `/www/newtube.com/index.html` which is the app's entry point.
+- The SQLite metadata database resides at `/yt/metadata.db`, website should be served via a nginx reverse proxy pointed to `/www/newtube.com/index.html` which is the app's entry point.
 
 Start the API server:
 
@@ -37,7 +37,7 @@ CTRL+A and CTRL+D to exit.
 ### `backend`
 
 - Purpose: lightweight Axum HTTP server that exposes `/api/*` routes consumed by the web UI.
-- Inputs: reads metadata from `/www/newtube.com/metadata.db` and streams files out of `/yt` (videos, shorts, subtitles, thumbnails).
+- Inputs: reads metadata from `/yt/metadata.db` and streams files out of `/yt` (videos, shorts, subtitles, thumbnails).
 - Caching: keeps a read-through cache in memory so hot feeds do not hammer SQLite; restart the process to clear the cache.
 - Usage example:
   ```bash
@@ -53,7 +53,7 @@ CTRL+A and CTRL+D to exit.
   - Creates `/yt/{videos,shorts,subtitles,thumbnails,comments}` as needed.
   - Downloads *all* muxed video formats, subtitles (auto + manual), thumbnails, `.info.json`, `.description`, and the latest ~500 comments per video.
   - Writes/updates `/yt/download-archive.txt` so future runs skip duplicates.
-  - Inserts/updates rows inside `/www/newtube.com/metadata.db` so the backend sees the new content immediately.
+  - Inserts/updates rows inside `/yt/metadata.db` so the backend sees the new content immediately.
 - Usage example:
   ```bash
   ./download_channel https://www.youtube.com/@LinusTechTips

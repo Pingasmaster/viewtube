@@ -22,11 +22,14 @@ echo "[*] Cloning repo..."
 rm -rf "$APP_DIR"
 git clone "$REPO_URL" "$APP_DIR"
 
-cd "$APP_DIR"
+cd / && cd "$APP_DIR"
+# Remove uneeded files
+./cleanup-repo.sh
+rm -f cleanup-repo.sh setup-software.sh
 
 echo "[*] Building with cargo (release)..."
 cargo build --release
-cp target/release/backend target/release/download_channel target/release/routine_update . && cargo clean
+cp target/release/backend target/release/download_channel target/release/routine_update /yt && cargo clean
 
 echo "[*] Stopping existing screen session for backend (if any)..."
 if screen -list | grep -q "\.${SCREEN_NAME_BACKEND}"; then
@@ -35,12 +38,12 @@ fi
 
 echo "[*] Stopping existing screen session for routine update (if any)..."
 if screen -list | grep -q "\.${SCREEN_NAME_ROUTINEUPDATE}"; then
-    screen -S "$SCREEN_NAME_ROUTINEUPDATE" -X quit || true  
+    screen -S "$SCREEN_NAME_ROUTINEUPDATE" -X quit || true
 fi
 
 echo "[*] Starting new screen session..."
-screen -dmS "$SCREEN_NAME_BACKEND" ./backend
-screen -dmS "$SCREEN_NAME_BACKEND" ./routine_update
+screen -dmS "$SCREEN_NAME_BACKEND" /yt/backend
+screen -dmS "$SCREEN_NAME_BACKEND" /yt/routine_update
 
 echo "[*] Restarting nginx..."
 systemctl restart "$NGINX_SERVICE"
