@@ -1,14 +1,14 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{anyhow, bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use blake3::Hasher;
 use clap::{ArgGroup, Parser};
-use ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
-use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use newtube_tools::config::{
     DEFAULT_CONFIG_PATH, DEFAULT_NEWTUBE_HOST, DEFAULT_NEWTUBE_PORT, DEFAULT_RELEASE_REPO,
-    EnvConfig, read_env_config, load_runtime_paths_from,
+    EnvConfig, load_runtime_paths_from, read_env_config,
 };
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -82,47 +82,129 @@ const FRONTEND_SKIP_ENTRIES: &[&str] = &[
 struct Cli {
     #[arg(short = 'u', long = "uninstall", help = "Uninstall the service")]
     uninstall: bool,
-    #[arg(short = 'c', long = "cleanup", help = "Cleanup build and runtime artifacts in the repo")]
+    #[arg(
+        short = 'c',
+        long = "cleanup",
+        help = "Cleanup build and runtime artifacts in the repo"
+    )]
     cleanup: bool,
-    #[arg(short = 'r', long = "reinstall", help = "Uninstall then install the latest version")]
+    #[arg(
+        short = 'r',
+        long = "reinstall",
+        help = "Uninstall then install the latest version"
+    )]
     reinstall: bool,
-    #[arg(long = "media-dir", value_name = "PATH", help = "Override the media directory (default /yt)")]
+    #[arg(
+        long = "media-dir",
+        value_name = "PATH",
+        help = "Override the media directory (default /yt)"
+    )]
     media_dir: Option<PathBuf>,
-    #[arg(long = "www-dir", value_name = "PATH", help = "Override the www directory (default /www/newtube.com)")]
+    #[arg(
+        long = "www-dir",
+        value_name = "PATH",
+        help = "Override the www directory (default /www/newtube.com)"
+    )]
     www_dir: Option<PathBuf>,
-    #[arg(long = "port", value_name = "PORT", help = "Override the backend API port (default 8080)")]
+    #[arg(
+        long = "port",
+        value_name = "PORT",
+        help = "Override the backend API port (default 8080)"
+    )]
     port: Option<u16>,
-    #[arg(long = "host", value_name = "IP", help = "Override the backend listen address (default 127.0.0.1)")]
+    #[arg(
+        long = "host",
+        value_name = "IP",
+        help = "Override the backend listen address (default 127.0.0.1)"
+    )]
     host: Option<String>,
-    #[arg(long = "domain", value_name = "NAME", help = "Domain name serving ViewTube (e.g., example.com)")]
+    #[arg(
+        long = "domain",
+        value_name = "NAME",
+        help = "Domain name serving ViewTube (e.g., example.com)"
+    )]
     domain: Option<String>,
-    #[arg(long = "release-repo", value_name = "OWNER/REPO", help = "GitHub repository used for signed releases")]
+    #[arg(
+        long = "release-repo",
+        value_name = "OWNER/REPO",
+        help = "GitHub repository used for signed releases"
+    )]
     release_repo: Option<String>,
     #[arg(long = "config", value_name = "PATH", default_value = DEFAULT_CONFIG_PATH, help = "Path to the config file")]
     config: PathBuf,
-    #[arg(short = 'y', long = "assume-yes", help = "Automatically answer yes to prompts")]
+    #[arg(
+        short = 'y',
+        long = "assume-yes",
+        help = "Automatically answer yes to prompts"
+    )]
     assume_yes: bool,
-    #[arg(long = "auto-update", help = "Download, verify, and build the latest signed release from GitHub")]
+    #[arg(
+        long = "auto-update",
+        help = "Download, verify, and build the latest signed release from GitHub"
+    )]
     auto_update: bool,
-    #[arg(long = "github-token-file", value_name = "PATH", help = "Optional file containing a GitHub token used for release downloads")]
+    #[arg(
+        long = "github-token-file",
+        value_name = "PATH",
+        help = "Optional file containing a GitHub token used for release downloads"
+    )]
     github_token_file: Option<PathBuf>,
-    #[arg(long = "apply-archive", help = "Apply a local signed source archive (offline update)")]
+    #[arg(
+        long = "apply-archive",
+        help = "Apply a local signed source archive (offline update)"
+    )]
     apply_archive: bool,
-    #[arg(long = "source-archive", value_name = "PATH", requires = "apply_archive", help = "Path to the signed source tarball (.tar.gz)")]
+    #[arg(
+        long = "source-archive",
+        value_name = "PATH",
+        requires = "apply_archive",
+        help = "Path to the signed source tarball (.tar.gz)"
+    )]
     source_archive: Option<PathBuf>,
-    #[arg(long = "source-signature", value_name = "PATH", requires = "apply_archive", help = "Path to the detached signature for the source tarball")]
+    #[arg(
+        long = "source-signature",
+        value_name = "PATH",
+        requires = "apply_archive",
+        help = "Path to the detached signature for the source tarball"
+    )]
     source_signature: Option<PathBuf>,
-    #[arg(long = "package-release", help = "Build and sign release archives (source + binary bundles)")]
+    #[arg(
+        long = "package-release",
+        help = "Build and sign release archives (source + binary bundles)"
+    )]
     package_release: bool,
-    #[arg(long = "release-tag", value_name = "TAG", requires = "package_release", help = "Release tag (e.g., v0.2.0) used for artifact naming")]
+    #[arg(
+        long = "release-tag",
+        value_name = "TAG",
+        requires = "package_release",
+        help = "Release tag (e.g., v0.2.0) used for artifact naming"
+    )]
     release_tag: Option<String>,
-    #[arg(long = "output-dir", value_name = "DIR", requires = "package_release", help = "Directory where release artifacts should be written")]
+    #[arg(
+        long = "output-dir",
+        value_name = "DIR",
+        requires = "package_release",
+        help = "Directory where release artifacts should be written"
+    )]
     output_dir: Option<PathBuf>,
-    #[arg(long = "signing-key", value_name = "PATH", requires = "package_release", help = "Path to the Ed25519 signing key generated via --keygen")]
+    #[arg(
+        long = "signing-key",
+        value_name = "PATH",
+        requires = "package_release",
+        help = "Path to the Ed25519 signing key generated via --keygen"
+    )]
     signing_key: Option<PathBuf>,
-    #[arg(long = "keygen", help = "Generate an Ed25519 signing keypair used for release packaging")]
+    #[arg(
+        long = "keygen",
+        help = "Generate an Ed25519 signing keypair used for release packaging"
+    )]
     keygen: bool,
-    #[arg(long = "key-dir", value_name = "DIR", requires = "keygen", help = "Directory where signing key files should be written")]
+    #[arg(
+        long = "key-dir",
+        value_name = "DIR",
+        requires = "keygen",
+        help = "Directory where signing key files should be written"
+    )]
     key_dir: Option<PathBuf>,
     #[arg(long = "trusted-pubkey", value_name = "PATH", default_value = DEFAULT_PUBLIC_KEY_PATH, help = "Path to the trusted release public key used for verification")]
     trusted_pubkey: PathBuf,
@@ -152,8 +234,12 @@ fn main() -> Result<()> {
     if cli.apply_archive {
         apply_signed_source_archive(
             &cli.config,
-            cli.source_archive.as_ref().expect("source archive required"),
-            cli.source_signature.as_ref().expect("source signature required"),
+            cli.source_archive
+                .as_ref()
+                .expect("source archive required"),
+            cli.source_signature
+                .as_ref()
+                .expect("source signature required"),
             &cli.trusted_pubkey,
             None,
         )?;
@@ -196,7 +282,9 @@ fn main() -> Result<()> {
             )?,
             resolve_release_repo(
                 cli.release_repo.clone(),
-                existing_env.as_ref().and_then(|cfg| cfg.release_repo.clone()),
+                existing_env
+                    .as_ref()
+                    .and_then(|cfg| cfg.release_repo.clone()),
                 cli.assume_yes,
             )?,
         )
@@ -223,7 +311,11 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| DEFAULT_NEWTUBE_HOST.to_string()),
             cli.release_repo
                 .clone()
-                .or_else(|| existing_env.as_ref().and_then(|cfg| cfg.release_repo.clone()))
+                .or_else(|| {
+                    existing_env
+                        .as_ref()
+                        .and_then(|cfg| cfg.release_repo.clone())
+                })
                 .unwrap_or_else(|| DEFAULT_RELEASE_REPO.to_string()),
         )
     };
@@ -249,7 +341,7 @@ fn main() -> Result<()> {
             config_path: cli.config.clone(),
             domain_name: domain.expect("domain required"),
             app_version,
-             release_repo: release_repo.clone(),
+            release_repo: release_repo.clone(),
             assume_yes: cli.assume_yes,
         };
         install(install_config, &repo_root, &cli.trusted_pubkey)?;
@@ -335,8 +427,7 @@ fn uninstall(_media_root: &Path, config_path: &Path) -> Result<()> {
             .with_context(|| format!("Removing {}", config_path.display()))?;
     }
     if Path::new(BIN_ROOT).exists() {
-        fs::remove_dir_all(BIN_ROOT)
-            .with_context(|| format!("Removing {}", BIN_ROOT))?;
+        fs::remove_dir_all(BIN_ROOT).with_context(|| format!("Removing {}", BIN_ROOT))?;
     }
     log_info("Uninstall complete");
     Ok(())
@@ -366,8 +457,7 @@ fn cleanup_repo(repo_root: &Path) -> Result<()> {
 }
 
 fn ensure_directory(path: &Path, mode: u32) -> Result<()> {
-    fs::create_dir_all(path)
-        .with_context(|| format!("Creating {}", path.display()))?;
+    fs::create_dir_all(path).with_context(|| format!("Creating {}", path.display()))?;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
     Ok(())
 }
@@ -405,7 +495,10 @@ fn install_release_binaries(build_root: &Path, dest_dir: &Path) -> Result<()> {
     for bin in binaries {
         let src = target_dir.join(bin);
         if !src.exists() {
-            bail!("Missing compiled binary {}. Run cargo build --release first.", src.display());
+            bail!(
+                "Missing compiled binary {}. Run cargo build --release first.",
+                src.display()
+            );
         }
         let dest = dest_dir.join(bin);
         copy_executable(&src, &dest)?;
@@ -445,7 +538,9 @@ fn copy_frontend_assets(src_root: &Path, dest_root: &Path) -> Result<()> {
     for entry in fs::read_dir(src_root)? {
         let entry = entry?;
         let name = entry.file_name();
-        let Some(name_str) = name.to_str() else { continue };
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
         if FRONTEND_SKIP_ENTRIES.contains(&name_str) {
             continue;
         }
@@ -722,8 +817,7 @@ fn resolve_release_repo(
         return normalize_release_repo(&repo);
     }
     if let Some(ref saved) = existing
-        && (assume_yes
-            || prompt_yes_no(&format!("Use detected release repo '{saved}'?"), true)?)
+        && (assume_yes || prompt_yes_no(&format!("Use detected release repo '{saved}'?"), true)?)
     {
         return Ok(saved.clone());
     }
@@ -1119,7 +1213,6 @@ fn deploy_nginx_config(domain: &str, www_root: &Path, assume_yes: bool) -> Resul
     Ok(())
 }
 
-
 fn install_systemd_units(cfg: &InstallConfig) -> Result<()> {
     let systemd_dir = PathBuf::from("/etc/systemd/system");
     fs::create_dir_all(&systemd_dir)?;
@@ -1277,7 +1370,10 @@ fn should_skip_source_entry(rel: &Path) -> bool {
     if components.is_empty() {
         return false;
     }
-    matches!(components[0], ".git" | "target" | "node_modules" | "coverage")
+    matches!(
+        components[0],
+        ".git" | "target" | "node_modules" | "coverage"
+    )
 }
 
 fn package_binary_archive(repo_root: &Path, dest: &Path) -> Result<()> {
@@ -1341,7 +1437,11 @@ fn sign_release_file(
     Ok(())
 }
 
-fn auto_update_from_github(config_path: &Path, pubkey_path: &Path, token: Option<&str>) -> Result<()> {
+fn auto_update_from_github(
+    config_path: &Path,
+    pubkey_path: &Path,
+    token: Option<&str>,
+) -> Result<()> {
     let env_cfg = read_env_config(config_path)?.ok_or_else(|| {
         anyhow!(
             "Missing env config at {}. Install ViewTube before running auto-update",
@@ -1421,7 +1521,9 @@ fn github_get(agent: &Agent, url: &str, token: Option<&str>) -> Result<Response>
     if let Some(token) = token {
         request = request.set("Authorization", &format!("token {token}"));
     }
-    let response = request.call().map_err(|err| anyhow!("GitHub request failed: {err}"))?;
+    let response = request
+        .call()
+        .map_err(|err| anyhow!("GitHub request failed: {err}"))?;
     if !(200..300).contains(&response.status()) {
         bail!(
             "GitHub API returned status {} for {}",
@@ -1453,13 +1555,14 @@ fn apply_signed_source_archive(
 ) -> Result<()> {
     let verifying_key = load_public_key(pubkey_path)?;
     let metadata = verify_release_signature(artifact, signature, &verifying_key)?;
-    if let Some(expected) = expected_version {
-        if expected != metadata.version {
-            bail!(
-                "Release signature reports version {} but updater expected {}",
-                metadata.version, expected
-            );
-        }
+    if let Some(expected) =
+        expected_version.filter(|candidate| *candidate != metadata.version)
+    {
+        bail!(
+            "Release signature reports version {} but updater expected {}",
+            metadata.version,
+            expected
+        );
     }
 
     log_info(format!(
@@ -1507,14 +1610,15 @@ fn verify_release_signature(
 ) -> Result<ReleaseSignature> {
     let payload: ReleaseSignature = serde_json::from_slice(&fs::read(signature_path)?)?;
     if payload.format != RELEASE_SIG_VERSION {
-        bail!(
-            "Unsupported release signature format {}",
-            payload.format
-        );
+        bail!("Unsupported release signature format {}", payload.format);
     }
     let digest = compute_blake3_hex(artifact)?;
     if digest != payload.digest {
-        bail!("Release checksum mismatch (expected {}, got {})", payload.digest, digest);
+        bail!(
+            "Release checksum mismatch (expected {}, got {})",
+            payload.digest,
+            digest
+        );
     }
     let signature_bytes: [u8; 64] = BASE64
         .decode(payload.signature.as_bytes())?
@@ -1703,7 +1807,7 @@ fn log_info(msg: impl AsRef<str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::Write, path::Path};
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]

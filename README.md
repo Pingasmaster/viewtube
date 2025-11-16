@@ -8,39 +8,62 @@ The Javascript caches pages and loads them only one time via a service worker to
 
 ## Install
 
-A one-liner will install everything you need, including auto-update scripts, and launch the backend. You just have to wait for the users to come and it will start downloading content automatically or download things yourself using `/yt/download_channel https://youtube.com/@LinustechTips`.
+1. **Clone and build once:**
+   ```bash
+   git clone https://github.com/Pingasmaster/viewtube.git
+   cd viewtube
+   cargo build --release
+   ```
+2. **Run the installer with the published public key:**
+   ```bash
+   sudo ./target/release/installer \
+     --domain example.com \
+     --trusted-pubkey release-public-key.json
+   ```
+   The repository now ships `release-public-key.json`, so you no longer have to copy the verifier to every host. Add `--release-repo <owner/repo>` if you are tracking a fork instead of `Pingasmaster/viewtube`.
+   (Fork maintainers: overwrite that file with your own Ed25519 public key before installing.)
+3. **Answer the prompts** (media root defaults to `/yt`, www root to `/www/newtube.com`, backend port `8080`). The installer writes everything to `/etc/viewtube-env`, deploys nginx, copies the freshly built binaries to `/opt/viewtube/bin`, and enables the systemd services (`viewtube-backend`, `viewtube-routine`, plus the nightly updater).
+
+From that point on the machine keeps itself current: every night at 03:00 the updater downloads the latest *signed source archive*, verifies it with the bundled public key, rebuilds the Rust binaries locally, swaps `/opt/viewtube/bin`, refreshes the static assets under the www root, and restarts the services. No `git pull` or writable shell scripts are involved.
+
+## Automatic updates & signed releases
+
+- **Two release artifacts per tag.** GitHub Actions (see `.github/workflows/release.yml`) produces `viewtube-src-<tag>.tar.gz` (full repo tree) and `viewtube-bin-<tag>.tar.gz` (prebuilt binaries + static assets). Each archive ships with a `.sig` file containing a BLAKE3 digest and an Ed25519 signature.
+- **Only the signed source archive feeds automation.** `installer --auto-update` (and the nightly `software-updater.timer`) downloads the latest source tarball + signature from GitHub Releases, verifies them with `release-public-key.json`, rebuilds the binaries locally, replaces `/opt/viewtube/bin`, refreshes the static assets, and restarts `viewtube-backend` + `viewtube-routine`. The binary tarball is there for reproducibility/mirrors but is never executed automatically.
+- **Manual/offline updates** use the same verification flow. Download the source tarball and signature and run:
+  ```bash
+  sudo /opt/viewtube/bin/installer \
+    --apply-archive \
+    --source-archive /tmp/viewtube-src-vX.Y.Z.tar.gz \
+    --source-signature /tmp/viewtube-src-vX.Y.Z.tar.gz.sig \
+    --trusted-pubkey release-public-key.json \
+    --config /etc/viewtube-env
+  ```
+  The command checks the signature, rebuilds, and restarts everything.
+- **BLAKE3 everywhere.** Older SHA-256 digests are gone; signatures now cover `digest` (BLAKE3 hex) plus the version string, so tampering is detected before any compilation step.
+
+## For maintainers and forks
+
+1. **Generate a key pair:** `cargo run --bin installer -- --keygen --key-dir ./release-key`. Overwrite `release-public-key.json` with the contents of `release-key/viewtube-release.pub` (the file in the repo is only a placeholder). Keep `viewtube-release.key` private.
+2. **Expose the private key to CI:** `base64 -w0 release-key/viewtube-release.key` and store the result as the `RELEASE_SIGNING_KEY` GitHub secret (the release workflow decodes it into `$RUNNER_TEMP/signing-key.json`).
+3. **Publish releases:** tag commits (`git tag v0.3.0 && git push origin v0.3.0`) and create a GitHub Release; `.github/workflows/release.yml` packages the signed source/binary tarballs plus `.sig` files automatically.
+4. **Install servers against your repo:** `sudo ./target/release/installer --release-repo yourname/yourfork --trusted-pubkey release-public-key.json ...`. The nightly updater now follows your releases, verifies them with your key, and rebuilds from source locally.
+
+Because the verifying key lives in the repo, bootstrapping a new server is now “clone → run installer → point at `release-public-key.json`”; no more copying keys by hand to every machine.
+
+## Running the Rust backend manually
+
+The installer already builds and copies `backend`, `download_channel`, `routine_update`, and `installer` into `/opt/viewtube/bin`, but you can still run them manually if you want to experiment or develop locally:
 
 ```bash
-git clone https://github.com/Pingasmaster/viewtube.git && cd viewtube && cargo build --release && sudo ./target/release/installer && rm -rf ./viewtube
-```
-
-This software needs a `media root` and a `www root` directory, it will ask you where you want them while you install the software. By default they are `/yt/` for the media and `/www/newtube.com` for `www root`. During the same prompt session the installer also asks which TCP port the backend should listen on (stored as `NEWTUBE_PORT`, default `8080`). All three answers live in the default config file `/etc/viewtube-env` so future runs automatically pick them up.
-
-Nginx is installed if it's not already and the correct config for the website is automatically put there when you run the `./installer`.
-
-## Using the Rust Backend
-
-Compile and get the binaries in the current directory (change `MEDIA_ROOT`/`WWW_ROOT`/`NEWTUBE_PORT` in `/etc/viewtube-env` *before* running the `setup-script.sh` helper if you want something else than `/yt` + `/www/newtube.com` + `8080`):
-
-To compile manually:
-
-```bash
-# Clone and build
 git clone https://github.com/Pingasmaster/viewtube.git && cd viewtube
 cargo build --release
-# Copy needed executables under /yt/ (or your media root directory).
-cp target/release/installer target/release/backend target/release/download_channel target/release/routine_update /yt/
+./target/release/backend --config /etc/viewtube-env --port 9090
 ```
 
-`installer` can be used to install, uninstall, reinstall (manual forced update), and clean the www root of build artifacts. It is meant to run once, at the first install, and then never again except if you need to clean the www-root directory and remove junk files made by a manual build maybe.
+Each binary loads `MEDIA_ROOT`, `WWW_ROOT`, `NEWTUBE_PORT`, and `RELEASE_REPO` from `/etc/viewtube-env` unless you override them with the usual CLI flags (`--config`, `--media-root`, `--www-root`, `--port`, etc.). The installer keeps the services running under systemd, so there is no longer a need for ad-hoc `screen` sessions or writable helper scripts.
 
-It checks if you have nginx and screen installed, prompt to install them if not, and puts the good nginx config in place if you wish (it asks for the domain name). It then clones the repo to the `www root` and installs a systemd service for the updater, which is a bash script that pulls the git repo under `www root` and sees if theres any update, if so it rebuilds the binaries and replace them and changes the software version in the config file. Its run at 3AM every single day. It also runs `routine_update` to download any new content from any channel already downloaded.
-
-`backend` is the backend api. Takes things under the media root directory (/yt/ by default). It's automatically run in the background by the command `screen` if you used the installer. You can also run it manually; by default it reads `MEDIA_ROOT`, `WWW_ROOT`, and `NEWTUBE_PORT` from `/etc/viewtube-env` (override with `--config`, `--media-root`, or `--port` if needed).
-
-`download_channel` takes a youtube channel full url and downloads every single video and short from that channel. It also downloads the comments of these videos alongside metadata and subtitles. Like the backend, it prefers loading `MEDIA_ROOT`/`WWW_ROOT` from `/etc/viewtube-env` unless you explicitly pass overrides.
-
-`routine_update` takes every single channel you already downloaded and retries to download them all, but remembers thanks to an archive what videos were already downloaded. Theres a metadata update mode which only redownloads metadata and subtitles and comments from a video which you can trigger manually. Right now the metadata mode is never trigger automatically. The binary now shares the same `--config` parsing logic so it picks up the exact same directories that the downloader/backends use.
+`download_channel` still downloads entire channels (videos, Shorts, comments, subtitles, thumbnails) into the media root, and `routine_update` walks the library to refresh every subscribed channel. Both binaries share the same config loader as the backend.
 
 This software needs a `media root` and a `www root` directory, which are used to store youtube videos/shorts/metadata and serve web content respectively. The `www root` is also by default the place where the github will be cloned into by `installer`.
 
@@ -77,17 +100,14 @@ server {
 }
 ```
 
-Start the API server:
+Start or inspect the API server under systemd:
 
-The runtime knobs are the API port plus the www/media roots. `./installer` writes them into `/etc/viewtube-env`, and every binary described below reads that file automatically (you can still override the values per command).
-
+```bash
+sudo systemctl status viewtube-backend
+sudo journalctl -fu viewtube-backend   # follow logs
 ```
-screen -S "backend" ./backend
-```
 
-CTRL+A and CTRL+D to exit.
-
-Manual `screen` sessions are helpful for debugging, but production installs should use `./installer` instead. It builds the helper script `viewtube-update-build-run.sh` under your media root and registers the `software-updater.timer` systemd unit so the helper runs every night at 03:00, rebuilding binaries, restarting the backend/routine updater, and refreshing nginx automatically.
+If you want to run it in the foreground for debugging, use `./target/release/backend --config /etc/viewtube-env --port 8080`. The runtime knobs (`MEDIA_ROOT`, `WWW_ROOT`, `NEWTUBE_PORT`, `RELEASE_REPO`) all live in `/etc/viewtube-env` and can still be overridden per command.
 
 ## Program reference
 
@@ -95,26 +115,25 @@ Every Rust binary lives under `target/release/`. Unless you pass overrides, they
 
 ### `installer`
 
-- Purpose: one-stop setup/teardown tool. It bootstraps nginx + screen, writes `/etc/viewtube-env`, copies the helper script `viewtube-update-build-run.sh` under the media root, and installs `software-updater.service`/`.timer` so the helper runs nightly. Root privileges are required for install/uninstall/reinstall operations (only `--cleanup` can run as a regular user).
+- Purpose: one-stop setup/teardown tool that also enforces the signed-release workflow. It writes `/etc/viewtube-env`, deploys nginx, copies binaries into `/opt/viewtube/bin`, installs the systemd units (`viewtube-backend`, `viewtube-routine`, `software-updater.service/.timer`), and verifies every update using the public key embedded in `release-public-key.json`. Root is required for install/uninstall/reinstall (only `--cleanup` is non-root).
 - Behaviour:
-  - Creates the media root (stores downloads + binaries) and www root (served by nginx), then rebuilds the project and copies `backend`, `download_channel`, and `routine_update` into the media root.
-  - Deploys Let's Encrypt-friendly nginx config based on the provided domain, restarts nginx, and ensures `screen`/`nginx` packages exist.
-  - Registers a systemd timer that executes the helper at 03:00 to `git pull`, rebuild with `cargo build --release`, copy binaries, restart the screen sessions (`backend` + `routine_update`), and reload nginx.
-  - Stores `MEDIA_ROOT`, `WWW_ROOT`, `NEWTUBE_PORT`, `DOMAIN_NAME`, and `APP_VERSION` inside the config file so subsequent runs pick up the same defaults.
-- Flags (managed via Clap):
-  - `-c`, `--cleanup`: delete `node_modules`, `coverage`, stray binaries, and run `cargo clean` in the repo (no root required).
-  - `-u`, `--uninstall`: remove helper/systemd units + config; combine with `--reinstall` to force a fresh install.
-  - `-r`, `--reinstall`: run uninstall first, then install again using the same prompts/overrides.
-  - `--media-dir <path>` and `--www-dir <path>`: override the default `/yt` and `/www/newtube.com` directories instead of accepting the prompts or remembered paths.
-  - `--port <PORT>`: set the backend port stored as `NEWTUBE_PORT` (default 8080).
-  - `--domain <NAME>`: required for new installs; the installer normalizes it (strips scheme/trailing slash) before putting it in nginx config and `/etc/viewtube-env`.
-  - `--config <path>`: choose another env file instead of `/etc/viewtube-env` (useful for non-root dry runs or staging environments).
-  - `-y`, `--assume-yes`: auto-accept any prompt (if you use this for a new install you must also provide `--domain`/path overrides because there is no chance to type them interactively).
+  - Prompts for/creates the media root (stores downloads + metadata) and www root (served by nginx), rebuilds the project, and copies fresh binaries into `/opt/viewtube/bin`.
+  - Deploys a Let’s Encrypt-friendly nginx config for the supplied domain and reloads nginx automatically.
+  - Registers a nightly timer that runs `installer --auto-update`, which downloads the latest signed source tarball, verifies it via BLAKE3+Ed25519, compiles from source locally, and restarts the services.
+  - Stores `MEDIA_ROOT`, `WWW_ROOT`, `NEWTUBE_PORT`, `DOMAIN_NAME`, `APP_VERSION`, and `RELEASE_REPO` inside `/etc/viewtube-env` so subsequent runs keep the same defaults.
+- Useful flags:
+  - `-c`, `--cleanup`: delete `node_modules`, `coverage`, stray binaries, and run `cargo clean` in the repo.
+  - `-u`, `--uninstall`: remove the systemd units/config; combine with `--reinstall` for a clean reinstall.
+  - `-r`, `--reinstall`: uninstall then install again with the same prompts/overrides.
+  - `--media-dir`, `--www-dir`, `--port`, `--domain`: override the stored defaults during installation.
+  - `--release-repo owner/repo`: trust a different GitHub repo (defaults to `Pingasmaster/viewtube`).
+  - `--auto-update`: run one update cycle immediately instead of waiting for the nightly timer.
+  - `--apply-archive`: verify + apply a local source tarball and signature (no network needed).
+  - `--package-release`, `--release-tag`, `--output-dir`, `--signing-key`: build the signed source/binary tarballs used on GitHub Releases (the CI workflow calls this).
 - Usage example:
   ```bash
-  sudo ./target/release/installer --domain example.com
-  # Later, to wipe scheduled jobs:
-  sudo ./target/release/installer --uninstall
+  sudo ./target/release/installer --domain example.com --trusted-pubkey release-public-key.json
+  sudo ./target/release/installer --auto-update --trusted-pubkey release-public-key.json
   ```
 
 ### `backend`
