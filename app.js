@@ -1,7 +1,7 @@
 // Database Manager - centralizes all IndexedDB access
 class DatabaseManager {
     constructor() {
-        this.dbName = 'ViewTubeDB';
+        this.dbName = 'NewTubeDB';
         this.version = 1;
         this.db = null;
         this.initPromise = null;
@@ -597,17 +597,17 @@ class App {
         // Page routing table - maps page names to their class constructors and titles
         this.pages = {
             'home': {
-                title: 'ViewTube - Home',
+                title: 'NewTube - Home',
                 script: 'pageHome.js',
                 class: null // Will be set after script loads
             },
             'watch': {
-                title: 'ViewTube - Watch',
+                title: 'NewTube - Watch',
                 script: 'pageViewer.js',
                 class: null
             },
             'shorts': {
-                title: 'ViewTube - Shorts',
+                title: 'NewTube - Shorts',
                 script: 'pageViewer.js',
                 class: null
             }
@@ -727,7 +727,7 @@ class App {
     }
 }
 
-if (typeof document !== 'undefined' && typeof window !== 'undefined' && !window.__VIEWTUBE_TEST__) {
+if (typeof document !== 'undefined' && typeof window !== 'undefined' && !window.__NEWTUBE_TEST__) {
     document.addEventListener('DOMContentLoaded', () => {
         const app = new App();
         app.init();

@@ -28,25 +28,25 @@ use walkdir::WalkDir;
 
 const DEFAULT_MEDIA_DIR: &str = "/yt";
 const DEFAULT_WWW_DIR: &str = "/www/newtube.com";
-const BIN_ROOT: &str = "/opt/viewtube/bin";
-const DEFAULT_PUBLIC_KEY_PATH: &str = "/etc/viewtube-release.pub";
+const BIN_ROOT: &str = "/opt/newtube/bin";
+const DEFAULT_PUBLIC_KEY_PATH: &str = "/etc/newtube-release.pub";
 const RELEASE_SIG_VERSION: u32 = 1;
-const RELEASE_SIG_PREFIX: &str = "viewtube-release";
-const SOURCE_ARCHIVE_PREFIX: &str = "viewtube-src";
-const BINARY_ARCHIVE_PREFIX: &str = "viewtube-bin";
+const RELEASE_SIG_PREFIX: &str = "newtube-release";
+const SOURCE_ARCHIVE_PREFIX: &str = "newtube-src";
+const BINARY_ARCHIVE_PREFIX: &str = "newtube-bin";
 const SOURCE_ROOT_DIR: &str = "source";
 const BINARY_ROOT_DIR: &str = "bundle";
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const SOFTWARE_SERVICE: &str = "software-updater.service";
 const SOFTWARE_TIMER: &str = "software-updater.timer";
 const NGINX_SERVICE: &str = "nginx";
-const BACKEND_SERVICE: &str = "viewtube-backend.service";
-const ROUTINE_SERVICE: &str = "viewtube-routine.service";
-const VIEWTUBE_GROUP: &str = "viewtube";
-const BACKEND_USER: &str = "viewtube-backend";
-const DOWNLOADER_USER: &str = "viewtube-downloader";
-const BACKEND_HOME: &str = "/var/lib/viewtube-backend";
-const DOWNLOADER_HOME: &str = "/var/lib/viewtube-downloader";
+const BACKEND_SERVICE: &str = "newtube-backend.service";
+const ROUTINE_SERVICE: &str = "newtube-routine.service";
+const newtube_GROUP: &str = "newtube";
+const BACKEND_USER: &str = "newtube-backend";
+const DOWNLOADER_USER: &str = "newtube-downloader";
+const BACKEND_HOME: &str = "/var/lib/newtube-backend";
+const DOWNLOADER_HOME: &str = "/var/lib/newtube-downloader";
 const FRONTEND_SKIP_ENTRIES: &[&str] = &[
     ".git",
     ".github",
@@ -65,7 +65,7 @@ const FRONTEND_SKIP_ENTRIES: &[&str] = &[
 ];
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Install and manage ViewTube services.")]
+#[command(author, version, about = "Install and manage newtube services.")]
 #[command(group(
     ArgGroup::new("mode")
         .args([
@@ -121,7 +121,7 @@ struct Cli {
     #[arg(
         long = "domain",
         value_name = "NAME",
-        help = "Domain name serving ViewTube (e.g., example.com)"
+        help = "Domain name serving newtube (e.g., example.com)"
     )]
     domain: Option<String>,
     #[arg(
@@ -513,7 +513,7 @@ fn copy_executable(src: &Path, dest: &Path) -> Result<()> {
     fs::copy(src, dest)
         .with_context(|| format!("Copying {} to {}", src.display(), dest.display()))?;
     fs::set_permissions(dest, fs::Permissions::from_mode(0o750))?;
-    chown_to("root", VIEWTUBE_GROUP, dest)?;
+    chown_to("root", newtube_GROUP, dest)?;
     Ok(())
 }
 
@@ -588,7 +588,7 @@ fn ensure_media_permissions(media_root: &Path) -> Result<()> {
     if !media_root.exists() {
         return Ok(());
     }
-    let owner = format!("{}:{}", DOWNLOADER_USER, VIEWTUBE_GROUP);
+    let owner = format!("{}:{}", DOWNLOADER_USER, newtube_GROUP);
     let status = Command::new("chown")
         .arg("-R")
         .arg(&owner)
@@ -667,7 +667,7 @@ fn write_env_config(cfg: &InstallConfig) -> Result<()> {
     fs::write(&cfg.config_path, content)
         .with_context(|| format!("Writing {}", cfg.config_path.display()))?;
     fs::set_permissions(&cfg.config_path, fs::Permissions::from_mode(0o640))?;
-    let owner = format!("root:{}", VIEWTUBE_GROUP);
+    let owner = format!("root:{}", newtube_GROUP);
     let target = cfg.config_path.to_string_lossy().into_owned();
     let args = [owner.as_str(), target.as_str()];
     run_command("chown", &args)?;
@@ -834,7 +834,7 @@ fn resolve_release_repo(
 fn prompt_for_media_root(default: Option<PathBuf>) -> Result<PathBuf> {
     println!();
     println!(
-        "Media root is the directory where ViewTube stores every downloaded video, audio file, subtitle, thumbnail, and the metadata database."
+        "Media root is the directory where newtube stores every downloaded video, audio file, subtitle, thumbnail, and the metadata database."
     );
     println!(
         "Pick a location with ample free space; hundreds of gigabytes may be required depending on your library."
@@ -846,7 +846,7 @@ fn prompt_for_media_root(default: Option<PathBuf>) -> Result<PathBuf> {
 fn prompt_for_www_root(default: Option<PathBuf>) -> Result<PathBuf> {
     println!();
     println!(
-        "WWW root is the folder nginx serves to browsers. It will contain the built ViewTube frontend assets (index.html, JS, CSS)."
+        "WWW root is the folder nginx serves to browsers. It will contain the built newtube frontend assets (index.html, JS, CSS)."
     );
     println!(
         "Choose the directory you want to expose via HTTPS; the installer will deploy the nginx config pointing here."
@@ -975,7 +975,7 @@ fn prompt_for_path(prompt: &str, default_path: PathBuf) -> Result<PathBuf> {
         if candidate.is_absolute() {
             return Ok(candidate);
         }
-        println!("Please enter an absolute path (e.g., /srv/viewtube).");
+        println!("Please enter an absolute path (e.g., /srv/newtube).");
     }
 }
 
@@ -1001,7 +1001,7 @@ fn prompt_for_domain(assume_yes: bool) -> Result<String> {
         bail!("--domain must be provided when --assume-yes is used and no saved domain exists");
     }
     loop {
-        print!("Enter the domain name serving ViewTube (e.g. example.com): ");
+        print!("Enter the domain name serving newtube (e.g. example.com): ");
         io::stdout().flush().ok();
         let mut input = String::new();
         if io::stdin().read_line(&mut input).is_err() {
@@ -1074,9 +1074,9 @@ fn ensure_nginx_installed(assume_yes: bool) -> Result<()> {
 }
 
 fn ensure_service_accounts(cfg: &InstallConfig) -> Result<()> {
-    ensure_group_exists(VIEWTUBE_GROUP)?;
-    ensure_user_exists(BACKEND_USER, VIEWTUBE_GROUP, BACKEND_HOME)?;
-    ensure_user_exists(DOWNLOADER_USER, VIEWTUBE_GROUP, DOWNLOADER_HOME)?;
+    ensure_group_exists(newtube_GROUP)?;
+    ensure_user_exists(BACKEND_USER, newtube_GROUP, BACKEND_HOME)?;
+    ensure_user_exists(DOWNLOADER_USER, newtube_GROUP, DOWNLOADER_HOME)?;
     ensure_media_permissions(&cfg.media_root)?;
     Ok(())
 }
@@ -1171,11 +1171,11 @@ fn command_exists(bin: &str) -> bool {
 fn deploy_nginx_config(domain: &str, www_root: &Path, assume_yes: bool) -> Result<()> {
     let (config_path, symlink_path) = if Path::new("/etc/nginx/sites-available").is_dir() {
         (
-            PathBuf::from("/etc/nginx/sites-available/viewtube.conf"),
-            Some(PathBuf::from("/etc/nginx/sites-enabled/viewtube.conf")),
+            PathBuf::from("/etc/nginx/sites-available/newtube.conf"),
+            Some(PathBuf::from("/etc/nginx/sites-enabled/newtube.conf")),
         )
     } else {
-        (PathBuf::from("/etc/nginx/conf.d/viewtube.conf"), None)
+        (PathBuf::from("/etc/nginx/conf.d/newtube.conf"), None)
     };
     let action = if config_path.exists() {
         "replace"
@@ -1226,22 +1226,22 @@ fn install_systemd_units(cfg: &InstallConfig) -> Result<()> {
     let pubkey_path = escape_systemd_path(Path::new(DEFAULT_PUBLIC_KEY_PATH))?;
     let config_path = escape_systemd_path(&cfg.config_path)?;
     let updater_contents = format!(
-        "[Unit]\nDescription=Fetch and build signed ViewTube releases\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nUser=root\nWorkingDirectory=/\nExecStart={exec} --auto-update --config {config} --trusted-pubkey {pubkey}\nTimeoutStartSec=3600\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=Fetch and build signed newtube releases\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nUser=root\nWorkingDirectory=/\nExecStart={exec} --auto-update --config {config} --trusted-pubkey {pubkey}\nTimeoutStartSec=3600\n\n[Install]\nWantedBy=multi-user.target\n",
         exec = installer_exec,
         config = config_path,
         pubkey = pubkey_path
     );
     fs::write(&updater_service, updater_contents)?;
 
-    let timer_contents = "[Unit]\nDescription=Scan for signed ViewTube releases nightly\n\n[Timer]\nOnCalendar=*-*-* 03:00\nPersistent=true\nUnit=software-updater.service\n\n[Install]\nWantedBy=timers.target\n";
+    let timer_contents = "[Unit]\nDescription=Scan for signed newtube releases nightly\n\n[Timer]\nOnCalendar=*-*-* 03:00\nPersistent=true\nUnit=software-updater.service\n\n[Install]\nWantedBy=timers.target\n";
     fs::write(&timer_path, timer_contents)?;
 
     let media_work_dir = escape_systemd_path(&cfg.media_root)?;
     let backend_exec = escape_systemd_path(&Path::new(BIN_ROOT).join("backend"))?;
     let backend_contents = format!(
-        "[Unit]\nDescription=ViewTube backend API\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nUser={user}\nGroup={group}\nWorkingDirectory={work}\nExecStart={exec} --config {config}\nRestart=on-failure\nRestartSec=2\nAmbientCapabilities=\nCapabilityBoundingSet=\nNoNewPrivileges=yes\nProtectSystem=full\nProtectHome=read-only\nPrivateTmp=yes\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nRestrictSUIDSGID=yes\nRestrictRealtime=yes\nLockPersonality=yes\nUMask=0027\nReadWritePaths={work}\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=newtube backend API\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nUser={user}\nGroup={group}\nWorkingDirectory={work}\nExecStart={exec} --config {config}\nRestart=on-failure\nRestartSec=2\nAmbientCapabilities=\nCapabilityBoundingSet=\nNoNewPrivileges=yes\nProtectSystem=full\nProtectHome=read-only\nPrivateTmp=yes\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nRestrictSUIDSGID=yes\nRestrictRealtime=yes\nLockPersonality=yes\nUMask=0027\nReadWritePaths={work}\n\n[Install]\nWantedBy=multi-user.target\n",
         user = BACKEND_USER,
-        group = VIEWTUBE_GROUP,
+        group = newtube_GROUP,
         work = media_work_dir,
         exec = backend_exec,
         config = config_path
@@ -1251,9 +1251,9 @@ fn install_systemd_units(cfg: &InstallConfig) -> Result<()> {
     let routine_exec = escape_systemd_path(&Path::new(BIN_ROOT).join("routine_update"))?;
     let www_dir = escape_systemd_path(&cfg.www_root)?;
     let routine_contents = format!(
-        "[Unit]\nDescription=ViewTube nightly channel refresh\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nUser={user}\nGroup={group}\nWorkingDirectory={work}\nExecStart={exec} --config {config} --media-root {work} --www-root {www}\nAmbientCapabilities=\nCapabilityBoundingSet=\nNoNewPrivileges=yes\nProtectSystem=full\nProtectHome=read-only\nPrivateTmp=yes\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nRestrictSUIDSGID=yes\nRestrictRealtime=yes\nLockPersonality=yes\nUMask=0027\nReadWritePaths={work}\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=newtube nightly channel refresh\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nUser={user}\nGroup={group}\nWorkingDirectory={work}\nExecStart={exec} --config {config} --media-root {work} --www-root {www}\nAmbientCapabilities=\nCapabilityBoundingSet=\nNoNewPrivileges=yes\nProtectSystem=full\nProtectHome=read-only\nPrivateTmp=yes\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nRestrictSUIDSGID=yes\nRestrictRealtime=yes\nLockPersonality=yes\nUMask=0027\nReadWritePaths={work}\n\n[Install]\nWantedBy=multi-user.target\n",
         user = DOWNLOADER_USER,
-        group = VIEWTUBE_GROUP,
+        group = newtube_GROUP,
         work = media_work_dir,
         exec = routine_exec,
         config = config_path,
@@ -1269,8 +1269,8 @@ fn generate_signing_keypair(cli: &Cli) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow!("--key-dir is required when using --keygen"))?;
     fs::create_dir_all(dir)?;
-    let private_path = dir.join("viewtube-release.key");
-    let public_path = dir.join("viewtube-release.pub");
+    let private_path = dir.join("newtube-release.key");
+    let public_path = dir.join("newtube-release.pub");
     if private_path.exists() || public_path.exists() {
         bail!("Signing key already exists in {}", dir.display());
     }
@@ -1444,7 +1444,7 @@ fn auto_update_from_github(
 ) -> Result<()> {
     let env_cfg = read_env_config(config_path)?.ok_or_else(|| {
         anyhow!(
-            "Missing env config at {}. Install ViewTube before running auto-update",
+            "Missing env config at {}. Install newtube before running auto-update",
             config_path.display()
         )
     })?;
@@ -1501,7 +1501,7 @@ fn fetch_latest_release(agent: &Agent, repo: &str, token: Option<&str>) -> Resul
 }
 
 fn download_asset(agent: &Agent, url: &str, token: Option<&str>, dest: &Path) -> Result<()> {
-    let mut request = agent.get(url).set("User-Agent", "viewtube-installer");
+    let mut request = agent.get(url).set("User-Agent", "newtube-installer");
     if let Some(token) = token {
         request = request.set("Authorization", &format!("token {token}"));
     }
@@ -1517,7 +1517,7 @@ fn download_asset(agent: &Agent, url: &str, token: Option<&str>, dest: &Path) ->
 }
 
 fn github_get(agent: &Agent, url: &str, token: Option<&str>) -> Result<Response> {
-    let mut request = agent.get(url).set("User-Agent", "viewtube-installer");
+    let mut request = agent.get(url).set("User-Agent", "newtube-installer");
     if let Some(token) = token {
         request = request.set("Authorization", &format!("token {token}"));
     }

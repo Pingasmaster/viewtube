@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Minimal Axum backend that serves already-downloaded ViewTube assets.
+//! Minimal Axum backend that serves already-downloaded NewTube assets.
 //!
 //! Incoming requests never touch YouTube. We only expose the SQLite metadata
 //! plus the media files stored locally on disk. The number of comments in here

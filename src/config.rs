@@ -4,10 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/viewtube-env";
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/newtube-env";
 pub const DEFAULT_NEWTUBE_PORT: u16 = 8080;
 pub const DEFAULT_NEWTUBE_HOST: &str = "127.0.0.1";
-pub const DEFAULT_RELEASE_REPO: &str = "Pingasmaster/viewtube";
+pub const DEFAULT_RELEASE_REPO: &str = "Pingasmaster/newtube";
 
 #[derive(Debug, Clone, Default)]
 pub struct EnvConfig {

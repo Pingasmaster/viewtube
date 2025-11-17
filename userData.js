@@ -1,5 +1,5 @@
 class UserDataStore {
-    constructor(storageKey = 'viewtube:userData') {
+    constructor(storageKey = 'newtube:userData') {
         this.storageKey = storageKey;
         this.data = this.loadData();
         this.ensureDefaults();
@@ -80,7 +80,7 @@ class UserDataStore {
         }
 
         window.dispatchEvent(
-            new CustomEvent('viewtube:userdata', {
+            new CustomEvent('newtube:userdata', {
                 detail: {
                     type: eventType,
                     data: this.getSnapshot()
@@ -237,7 +237,7 @@ class UserDataStore {
         }, null, 2);
     }
 
-    downloadExport(filename = 'viewtube-user-data.json') {
+    downloadExport(filename = 'newtube-user-data.json') {
         const blob = new Blob([this.exportToString()], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -266,7 +266,7 @@ class UserDataStore {
 
 if (typeof window !== 'undefined') {
     window.UserDataStore = UserDataStore;
-    if (!window.__VIEWTUBE_TEST__) {
+    if (!window.__newtube_TEST__) {
         window.userDataStore = new UserDataStore();
     }
 }

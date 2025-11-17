@@ -6,7 +6,7 @@ const { DatabaseManager } = require('../../app');
 async function createManager(overrides = {}) {
   const manager = new DatabaseManager();
   manager.metadataPath = '/noop';
-  manager.dbName = `ViewTubeDB-test-${Date.now()}-${Math.random()}`;
+  manager.dbName = `NewTubeDB-test-${Date.now()}-${Math.random()}`;
   manager.api = {
     fetchBootstrap: jest.fn().mockResolvedValue(null),
     fetchVideos: jest.fn().mockResolvedValue([]),

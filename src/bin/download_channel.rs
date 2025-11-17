@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 //! Command-line helper that downloads whole YouTube channels and builds the
-//! on-disk cache that the ViewTube backend serves.
+//! on-disk cache that the NewTube backend serves.
 //!
 //! The binary intentionally documents every moving piece: directory layout,
 //! yt-dlp invocations, and metadata normalization. This makes it trivial to

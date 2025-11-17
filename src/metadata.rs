@@ -1,4 +1,4 @@
-//! Metadata persistence layer for ViewTube. Mainly used for backend tests.
+//! Metadata persistence layer for NewTube. Mainly used for backend tests.
 //!
 //! All structs in this module mirror how metadata is serialized to disk and
 //! exposed to the API.

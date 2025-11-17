@@ -7,7 +7,7 @@ global.TextDecoder = TextDecoder;
 
 global.window = global.window || global;
 // Make sure we are in testing mode in the UI so we load a clean DB
-Object.defineProperty(window, '__VIEWTUBE_TEST__', {
+Object.defineProperty(window, '__NEWTUBE_TEST__', {
   value: true,
   writable: true,
   configurable: true

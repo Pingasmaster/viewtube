@@ -1,5 +1,5 @@
-// Service Worker for ViewTube
-const CACHE_NAME = 'viewtube-static-v2';
+// Service Worker for newtube
+const CACHE_NAME = 'newtube-static-v2';
 
 // List of files to cache on install
 const urlsToCache = [

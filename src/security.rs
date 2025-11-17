@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Shared security helpers used by the ViewTube binaries.
+//! Shared security helpers used by the newtube binaries.
 
 use anyhow::{Result, bail};
 use nix::unistd::Uid;
@@ -11,7 +11,7 @@ use nix::unistd::Uid;
 /// not silently revert to insecure defaults.
 pub fn ensure_not_root(process: &str) -> Result<()> {
     if Uid::current().is_root() {
-        bail!("{process} must not be run as root; please use the viewtube-* service accounts");
+        bail!("{process} must not be run as root; please use the newtube-* service accounts");
     }
     Ok(())
 }

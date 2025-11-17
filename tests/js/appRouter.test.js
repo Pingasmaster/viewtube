@@ -41,7 +41,7 @@ describe('App router and loader', () => {
     const loadSpy = jest.spyOn(app, 'loadScript').mockResolvedValue();
 
     await app.changePage('home');
-    expect(document.title).toBe('ViewTube - Home');
+    expect(document.title).toBe('NewTube - Home');
     expect(homePageMocks.init).toHaveBeenCalledTimes(1);
 
     await app.changePage('watch');
