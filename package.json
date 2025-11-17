@@ -1,6 +1,6 @@
 {
   "name": "newtube",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A youtube frontend clone, entirely written from the gound up in HTMlL, CSS and javascript to be extra extra fast and almost pixel-perfect with the Youtube UI. Only exceptions are bad UI/UX decisions from google that are reversed here like the very recent icons and mobile-oriented style. The backend is fully written in safe rust.",
   "main": "app.js",
   "scripts": {
